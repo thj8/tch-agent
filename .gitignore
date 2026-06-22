@@ -1,0 +1,24 @@
+node_modules/
+
+# 构建产物
+bin/
+dist/
+*.tsbuildinfo
+
+# 运行时数据（用户配置）
+.tch-agent/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# 日志
+*.log
+
+# 临时文件
+*.swp
+*.swo
+*~

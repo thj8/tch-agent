@@ -1,0 +1,20 @@
+{
+  "name": "my-tch-agent",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "start": "bun run apps/cli/src/main.ts",
+    "typecheck": "bun ./node_modules/typescript/bin/tsc --npEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@my/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": "src/main.ts",
+  "dependencies": {
+    "@my/core": "workspace:*"
+  }
+}
