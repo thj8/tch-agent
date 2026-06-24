@@ -1,4 +1,14 @@
-import { AuthStorage, ModelRegistry, SettingsManager } from "@mariozechner/pi-coding-agent"
+import {
+    AuthStorage,
+    DefaultResourceLoader,
+    ModelRegistry,
+    SettingsManager,
+} from "@mariozechner/pi-coding-agent"
+import type {
+    CreateAgentSessionOptions,
+    ExtensionFactory,
+} from "@mariozechner/pi-coding-agent"
+import type { Api, Model, ThinkingLevel } from "@mariozechner/pi-ai"
 import { mkdir, rename } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
@@ -77,6 +87,9 @@ export class ConfigManager {
     // 释放内置 prompt（不覆盖已存在的文件）
     await this.releaseBuiltinPrompts()
 
+    // 把 provider-prefs 应用到 ModelRegistry（baseUrl override）
+    this.applyProviderPrefs()
+
     // SDK 默认设置：开启自动重试（LLM 调用经常遇到 rate limit）
     this.settings.setRetryEnabled(true)
     this.settings.applyOverrides({
@@ -85,6 +98,48 @@ export class ConfigManager {
         maxRetries: 20,
         baseDelayMs: 1000,
       }
+    })
+  }
+
+  /**
+   * 把 provider-prefs.json 应用到 ModelRegistry。
+   *
+   * SDK registerProvider 不传 models 时走 override-only 模式：
+   * 把 SDK 内置 provider（如 anthropic / openai）的所有 model 的 baseUrl 换成新的，
+   * 复用 SDK 自带的 model 列表 + 价格 + contextWindow 等元数据。
+   *
+   * 用法：在 provider-prefs 里写一个 name="anthropic"、baseUrl=自定义端点 的 entry，
+   * SDK 内置 claude-* 模型就会指向新端点（智谱 anthropic-compat 端点会自动做 model 名映射）。
+   *
+   * 注意：provider 名必须匹配 SDK 内置 provider（anthropic / openai / google 等），
+   * 否则 override-only 不生效（SDK 找不到要 override 的内置 model 列表）。
+   */
+  private applyProviderPrefs(): void {
+    // 同步读，避免把 initialize 改成 async chain；provider-prefs 文件很小
+    const file = Bun.file(this.providerPrefsPath())
+    file.json().then((data) => {
+      if (!Array.isArray(data)) return
+      const entries = data as ProviderPrefEntry[]
+      for (const entry of entries) {
+        const providerName = entry.name
+        const baseUrl = entry.baseUrl?.trim()
+        if (!providerName || !baseUrl) continue
+        try {
+          this.models.registerProvider(providerName, {
+            baseUrl,
+            ...(entry.api ? { api: entry.api as Api } : {}),
+          })
+        } catch (error) {
+          // 不让一个失败的 provider 注册阻塞整个 initialize
+          console.error(
+            `[warn] failed to register provider "${providerName}": ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          )
+        }
+      }
+    }).catch(() => {
+      // 文件不存在或解析失败 → 无 provider pref，静默
     })
   }
 
@@ -339,6 +394,105 @@ You are a helpful agent that solves tasks step by step.
   /** 删除一个 prompt（不存在时静默） */
   async removePrompt(name: string): Promise<void> {
     await prompts.removePrompt(this.dir, name)
+  }
+
+  // ── Prompt → AgentSessionOptions ────────────────────────
+
+  /**
+   * Prompt → AgentSessionOptions 的"装配函数"。
+   *
+   * 流程：
+   *   1. 加载 prompt 文件（找不到 / disabled 返回 undefined）
+   *   2. 解析 model pref → Model<Api> + thinkingLevel
+   *   3. 把 prompt.meta.tools 直接作为工具名白名单（SDK 自己实例化）
+   *   4. 用 DefaultResourceLoader + systemPromptOverride 传 prompt.content
+   *
+   * @param promptName prompt 名
+   * @param extensions ExtensionFactory 数组（可选，通过 ResourceLoader 注入）
+   * @param cwd 工作目录（影响 read/bash/ls 等工具的相对路径，默认 process.cwd()）
+   */
+  async resolvePromptSession(
+    promptName: string,
+    extensions: ExtensionFactory[] = [],
+    cwd: string = process.cwd(),
+  ): Promise<CreateAgentSessionOptions | undefined> {
+    // 1. 加载 prompt
+    const prompt = await this.getPrompt(promptName)
+    if (!prompt) return undefined
+    if (prompt.meta.disabled) return undefined
+
+    // 2. 解析 model（可选）
+    let model: Model<Api> | undefined
+    let thinkingLevel: ThinkingLevel | undefined
+    if (prompt.meta.model) {
+      try {
+        const resolved = await this.resolveModelPref(prompt.meta.model)
+        model = resolved.model
+        thinkingLevel = resolved.thinkingLevel
+      } catch (error) {
+        throw new Error(
+          `prompt "${promptName}" model "${prompt.meta.model}": ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        )
+      }
+    }
+
+    // 3. 装配 ResourceLoader（systemPrompt + extensions）
+    //    SDK 规定：extensions 必须通过 ResourceLoader 注入
+    const resourceLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir: this.dir,
+      systemPromptOverride: () => prompt.content,
+      extensionFactories: extensions,
+    })
+    await resourceLoader.reload()
+
+    // 4. 组装 CreateAgentSessionOptions
+    const opts: CreateAgentSessionOptions = {
+      cwd,
+      tools: prompt.meta.tools ?? [],
+      resourceLoader,
+      authStorage: this.auth,
+      modelRegistry: this.models,
+      settingsManager: this.settings,
+    }
+    if (model) opts.model = model
+    if (thinkingLevel) opts.thinkingLevel = thinkingLevel
+
+    return opts
+  }
+
+  /**
+   * 把 Model 偏好 ID 解析成真实 Model<Api> + thinkingLevel。
+   *
+   * @param modelPrefId 用户的 model 偏好 ID（如 "work-gpt4"）
+   */
+  async resolveModelPref(
+    modelPrefId: string,
+  ): Promise<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }> {
+    // 查 model-prefs.json
+    const prefs = await this.listModelPrefs()
+    const pref = prefs.find((p) => p.id === modelPrefId)
+    if (!pref) {
+      throw new Error(`model pref not found: ${modelPrefId}`)
+    }
+
+    // 在 ModelRegistry 里找
+    const all = await this.models.getAvailable()
+    const model = all.find(
+      (m) => m.provider === pref.provider && m.id === pref.modelId,
+    )
+    if (!model) {
+      throw new Error(
+        `model not registered: ${pref.provider}/${pref.modelId} (did you configure the provider?)`,
+      )
+    }
+
+    return {
+      model,
+      ...(pref.thinkingLevel ? { thinkingLevel: pref.thinkingLevel as ThinkingLevel } : {}),
+    }
   }
 
   // ── 工具方法 ────────────────────────────────────────────

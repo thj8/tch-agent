@@ -320,6 +320,29 @@ async function main() {
       console.log(`  Edit at: ~/.tch-agent/config/prompts/${name}.md`)
     })
 
+  // ── solver 命令 ─────────────────────────────────────────
+
+  program
+    .command("solver")
+    .description("Run a solver locally (non-Docker) with the given prompt and task")
+    .requiredOption("-p, --prompt <name>", "Prompt name")
+    .argument("<task>", "Task description")
+    .action(async (task: string, opts: { prompt: string }) => {
+      const { runSolverCli } = await import("@my/core")
+      try {
+        await runSolverCli({
+          promptName: opts.prompt,
+          task,
+        })
+      } catch (error) {
+        console.error(
+          "[fatal]",
+          error instanceof Error ? error.message : String(error),
+        )
+        process.exit(1)
+      }
+    })
+
   await program.parseAsync(process.argv)
 }
 

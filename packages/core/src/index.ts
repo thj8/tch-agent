@@ -4,6 +4,10 @@ export { ConfigManager, TCH_AGENT_HOME_DIR, DEFAULT_CONFIG_DIR } from "./config/
 export type { HostSettings, HostRuntimeSettings } from "./config/types"
 export type { ProviderPrefEntry, ModelConfigEntry } from "./config/providers/types"
 export * from "./config/prompts/index"
+export { runSolverCli } from "./solver/cli"
+export type { RunSolverOptions } from "./solver/cli"
+export { createSolverSession } from "./solver/session"
+export type { SolverSession } from "./solver/session"
 
 
 
