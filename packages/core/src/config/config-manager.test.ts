@@ -132,6 +132,56 @@ describe("ConfigManager - API Keys", () => {
   })
 })
 
+describe("ConfigManager - Prompts", () => {
+  test("initialize 自动释放内置 SOLVER prompt", async () => {
+    const list = await cfg.listPrompts()
+    expect(list.map((p) => p.name)).toContain("SOLVER")
+  })
+
+  test("savePrompt 后 getPrompt 能读回", async () => {
+    await cfg.savePrompt({
+      name: "REVIEWER",
+      meta: { description: "x", model: "work-gpt4" },
+      content: "body",
+    })
+    const p = await cfg.getPrompt("REVIEWER")
+    expect(p?.content).toBe("body")
+    expect(p?.meta.description).toBe("x")
+    expect(p?.meta.model).toBe("work-gpt4")
+  })
+
+  test("getPrompt 不存在返回 undefined", async () => {
+    expect(await cfg.getPrompt("ghost")).toBeUndefined()
+  })
+
+  test("listPrompts 同时包含内置和用户新建的，并按名字排序", async () => {
+    await cfg.savePrompt({ name: "AAA", meta: {}, content: "" })
+    const names = (await cfg.listPrompts()).map((p) => p.name)
+    expect(names).toContain("SOLVER")
+    expect(names).toContain("AAA")
+    // AAA 字母序在 SOLVER 前
+    expect(names.indexOf("AAA")).toBeLessThan(names.indexOf("SOLVER"))
+  })
+
+  test("removePrompt 后 getPrompt 返回 undefined", async () => {
+    await cfg.savePrompt({ name: "TEMP", meta: {}, content: "" })
+    await cfg.removePrompt("TEMP")
+    expect(await cfg.getPrompt("TEMP")).toBeUndefined()
+  })
+
+  test("listAgentPrompts / listSubagentPrompts 按 isSubagent 分流", async () => {
+    await cfg.savePrompt({ name: "MAIN", meta: {}, content: "" })
+    await cfg.savePrompt({ name: "SUB", meta: { isSubagent: true }, content: "" })
+
+    const agents = (await cfg.listAgentPrompts()).map((p) => p.name)
+    const subs = (await cfg.listSubagentPrompts()).map((p) => p.name)
+
+    expect(agents).toContain("MAIN")
+    expect(agents).not.toContain("SUB")
+    expect(subs).toEqual(["SUB"])
+  })
+})
+
 describe("ConfigManager - 单例", () => {
   test("同 dir 复用实例，不同 dir 拿到新实例", async () => {
     const a1 = await ConfigManager.getInstance(dir)

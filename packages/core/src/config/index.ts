@@ -2,6 +2,7 @@ import { AuthStorage, ModelRegistry, SettingsManager } from "@mariozechner/pi-co
 import { mkdir, rename } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
+import * as prompts from "./prompts/index"
 import type { ModelConfigEntry, ProviderPrefEntry } from "./providers/types"
 import type { AddResult } from "./types"
 
@@ -73,6 +74,9 @@ export class ConfigManager {
       await mkdir(d, { recursive: true })
     }
 
+    // 释放内置 prompt（不覆盖已存在的文件）
+    await this.releaseBuiltinPrompts()
+
     // SDK 默认设置：开启自动重试（LLM 调用经常遇到 rate limit）
     this.settings.setRetryEnabled(true)
     this.settings.applyOverrides({
@@ -82,6 +86,50 @@ export class ConfigManager {
         baseDelayMs: 1000,
       }
     })
+  }
+
+  /**
+   * 把内置 prompt 释放到用户目录（不覆盖已存在的文件）。
+   */
+  private async releaseBuiltinPrompts(): Promise<void> {
+    const builtinPrompts: Record<string, string> = {
+      SOLVER: `---
+description: General-purpose solver for any task
+tools:
+  - read
+  - bash
+  - write
+  - edit
+  - grep
+  - ls
+---
+
+You are a helpful agent that solves tasks step by step.
+
+# Workflow
+
+1. Read the task description carefully.
+2. Explore the environment to understand what's available.
+3. Make a plan before acting.
+4. Use tools to make progress, one step at a time.
+5. Verify each step's result before moving on.
+6. Summarize the final result when done.
+
+# Rules
+
+- Be concise. Don't repeat what you just did.
+- Use \`read\` tool to inspect files before assuming their content.
+- Use \`bash\` to run commands when you need to explore or test.
+- If something fails, debug it instead of giving up.
+`,
+    }
+
+    for (const [name, content] of Object.entries(builtinPrompts)) {
+      const path = resolve(this.dir, "prompts", `${name}.md`)
+      const file = Bun.file(path)
+      if (await file.exists()) continue   // 不覆盖
+      await Bun.write(path, content)
+    }
   }
 
   // ── API Keys ────────────────────────────────────────────
@@ -259,6 +307,38 @@ export class ConfigManager {
     if (next.length === list.length) return false
     await this.writeModelPrefs(next)
     return true
+  }
+
+  // ── Prompts ──────────────────────────────────────────────
+
+  /** 加载一个 prompt（找不到返回 undefined） */
+  async getPrompt(name: string): Promise<prompts.PromptFile | undefined> {
+    return prompts.loadPrompt(this.dir, name)
+  }
+
+  /** 列出所有 prompt（按名字排序） */
+  async listPrompts(): Promise<prompts.PromptFile[]> {
+    return prompts.listPrompts(this.dir)
+  }
+
+  /** 列出普通 agent prompt（非 subagent） */
+  async listAgentPrompts(): Promise<prompts.PromptFile[]> {
+    return prompts.listAgentPrompts(this.dir)
+  }
+
+  /** 列出 subagent prompt */
+  async listSubagentPrompts(): Promise<prompts.PromptFile[]> {
+    return prompts.listSubagentPrompts(this.dir)
+  }
+
+  /** 保存一个 prompt（覆盖写） */
+  async savePrompt(prompt: prompts.PromptFile): Promise<void> {
+    await prompts.savePrompt(this.dir, prompt)
+  }
+
+  /** 删除一个 prompt（不存在时静默） */
+  async removePrompt(name: string): Promise<void> {
+    await prompts.removePrompt(this.dir, name)
   }
 
   // ── 工具方法 ────────────────────────────────────────────

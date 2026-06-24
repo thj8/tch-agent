@@ -238,6 +238,88 @@ async function main() {
       console.log(`✓ Removed model preference: ${id}`)
     })
 
+  // ── config / prompts ───────────────────────────────────
+
+  const promptsCmd = configCmd.command("prompts").description("Manage prompts")
+
+  promptsCmd
+    .command("list")
+    .description("List all prompts")
+    .action(async () => {
+      const config = await ConfigManager.getInstance()
+      const list = await config.listPrompts()
+
+      if (list.length === 0) {
+        console.log("(no prompts)")
+        return
+      }
+
+      console.log("NAME\t\tDESCRIPTION")
+      console.log("----\t\t-----------")
+      for (const p of list) {
+        const desc = (p.meta.description ?? "").slice(0, 40)
+        console.log(`${p.name}\t\t${desc}`)
+      }
+    })
+
+  promptsCmd
+    .command("show <name>")
+    .description("Show a prompt's content")
+    .action(async (name: string) => {
+      const config = await ConfigManager.getInstance()
+      const prompt = await config.getPrompt(name)
+      if (!prompt) {
+        console.error(`✗ Prompt not found: ${name}`)
+        process.exit(1)
+      }
+      console.log(`=== ${prompt.name} ===`)
+      console.log(`description: ${prompt.meta.description ?? "-"}`)
+      console.log(`model: ${prompt.meta.model ?? "-"}`)
+      console.log(`tools: ${(prompt.meta.tools ?? []).join(", ") || "-"}`)
+      console.log()
+      console.log(prompt.content)
+    })
+
+  promptsCmd
+    .command("remove <name>")
+    .description("Remove a prompt")
+    .action(async (name: string) => {
+      const config = await ConfigManager.getInstance()
+      const existing = await config.getPrompt(name)
+      if (!existing) {
+        console.error(`✗ No prompt with name "${name}"`)
+        process.exit(1)
+      }
+      await config.removePrompt(name)
+      console.log(`✓ Removed prompt: ${name}`)
+    })
+
+  promptsCmd
+    .command("create <name>")
+    .description("Create a new prompt interactively")
+    .option("-d, --description <desc>", "Description", "")
+    .option("-m, --model <modelId>", "Model preference ID")
+    .action(async (name: string, opts) => {
+      const config = await ConfigManager.getInstance()
+      const existing = await config.getPrompt(name)
+      if (existing) {
+        console.error(`✗ Prompt already exists: ${name}`)
+        process.exit(1)
+      }
+
+      await config.savePrompt({
+        name,
+        meta: {
+          description: opts.description || `${name} prompt`,
+          ...(opts.model ? { model: opts.model } : {}),
+          tools: ["read", "bash"],
+        },
+        content: `You are a ${name} agent.\n\nDo your job well.`,
+      })
+      console.log(`✓ Created prompt: ${name}`)
+      console.log(`  Edit at: ~/.tch-agent/config/prompts/${name}.md`)
+    })
+
   await program.parseAsync(process.argv)
 }
 
