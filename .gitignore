@@ -15,6 +15,12 @@ dist/
 # Claude Code worktrees
 .claude/worktrees/
 
+# RTK 本地过滤器缓存（rtk trust 后才用，不入仓库）
+.rtk/
+
+# 个人 prompt 笔记
+prompts.md
+
 # macOS
 .DS_Store
 
