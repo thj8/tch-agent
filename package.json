@@ -3,18 +3,30 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "tch-agent": "apps/cli/src/main.ts"
+  },
   "workspaces": [
     "packages/*",
     "apps/*"
   ],
   "scripts": {
     "start": "bun run apps/cli/src/main.ts",
-    "typecheck": "bun ./node_modules/typescript/bin/tsc --npEmit"
+    "typecheck": "bun ./node_modules/typescript/bin/tsc --noEmit",
+    "test": "bun test",
+    "build": "bun build --compile apps/cli/src/main.ts --outfile bin/tch-agent && cp package.json bin/"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/node": "^26.0.0"
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "^0.73.1",
+    "@mariozechner/pi-coding-agent": "^0.73.1",
+    "@opentelemetry/api": "^1.9.1",
+    "commander": "^15.0.0"
   }
 }

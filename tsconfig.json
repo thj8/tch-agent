@@ -9,8 +9,8 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
-    "lib": ["ESNext", "es2020", "dom"],
-    "types": ["bun-types"],
+    "lib": ["ESNext", "DOM"],
+    "types": ["bun", "node"],
     "jsx": "react-jsx",
     "jsxImportSource": "react",
     "noUncheckedIndexedAccess": false
