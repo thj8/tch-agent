@@ -1,12 +1,12 @@
 import {
-    AuthStorage,
-    DefaultResourceLoader,
-    ModelRegistry,
-    SettingsManager,
+  AuthStorage,
+  DefaultResourceLoader,
+  ModelRegistry,
+  SettingsManager,
 } from "@mariozechner/pi-coding-agent"
 import type {
-    CreateAgentSessionOptions,
-    ExtensionFactory,
+  CreateAgentSessionOptions,
+  ExtensionFactory,
 } from "@mariozechner/pi-coding-agent"
 import type { Api, Model, ThinkingLevel } from "@mariozechner/pi-ai"
 import { mkdir, rename } from "node:fs/promises"
@@ -174,8 +174,7 @@ export class ConfigManager {
         } catch (error) {
           // 不让一个失败的 provider 注册阻塞整个 initialize
           console.error(
-            `[warn] failed to register provider "${providerName}": ${
-              error instanceof Error ? error.message : String(error)
+            `[warn] failed to register provider "${providerName}": ${error instanceof Error ? error.message : String(error)
             }`,
           )
         }
@@ -478,8 +477,7 @@ You are a helpful agent that solves tasks step by step.
         thinkingLevel = resolved.thinkingLevel
       } catch (error) {
         throw new Error(
-          `prompt "${promptName}" model "${prompt.meta.model}": ${
-            error instanceof Error ? error.message : String(error)
+          `prompt "${promptName}" model "${prompt.meta.model}": ${error instanceof Error ? error.message : String(error)
           }`,
         )
       }
