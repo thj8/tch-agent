@@ -12,6 +12,9 @@ dist/
 .vscode/
 .idea/
 
+# Claude Code worktrees
+.claude/worktrees/
+
 # macOS
 .DS_Store
 
