@@ -731,6 +731,115 @@ You are a helpful agent...
 
 ---
 
+## 第四点五步：四个配置属性之间的关系
+
+刚配完四层东西——`api-keys` / `providers` / `model-prefs` / `SOLVER.md`——它们是怎么串起来的？为什么分这么多层？
+
+### 实际存储长什么样
+
+```
+~/.tch-agent/config/
+├── auth.json            ← SDK 凭证库（按 provider 名存 key）
+├── provider-prefs.json  ← provider 注册说明（baseUrl / api / 自定义 model 列表）
+├── model-prefs.json     ← 用户起的别名 → (provider, modelId)
+└── prompts/SOLVER.md    ← 引用别名
+```
+
+按第四步配完后：
+
+**auth.json**
+```json
+{ "glm": { "type": "api_key", "key": "<your-token>" } }
+```
+
+**provider-prefs.json**
+```json
+[{
+  "id": "glm",
+  "name": "glm",                                    ← SDK 认的 provider key
+  "api": "anthropic-messages",
+  "baseUrl": "https://open.bigmodel.cn/api/anthropic",
+  "models": ["glm-5", "glm-5.2"]                    ← 真实 model 名
+}]
+```
+
+**model-prefs.json**
+```json
+[{
+  "id": "main-glm",     ← 用户起的别名
+  "provider": "glm",    ← 指向上面的 name
+  "modelId": "glm-5"    ← 指向上面 models 里的某一项
+}]
+```
+
+**SOLVER.md**
+```yaml
+model: main-glm   ← 指向上面的别名
+```
+
+### 运行时的链式查找
+
+跑 `solver -p SOLVER "..."` 时，`resolvePromptSession` 这样穿起来：
+
+```
+SOLVER.md 的 "model: main-glm"
+        │
+        ▼ resolvePromptSession 读 frontmatter
+        │
+  找 model-prefs.json 里 id="main-glm"
+        │  → 得到 { provider: "glm", modelId: "glm-5" }
+        ▼ resolveModelPref
+        │
+  在 ModelRegistry 里查 provider="glm" + id="glm-5"
+        │  → 得到 SDK 的 Model<Api> 实体（含 baseUrl/api 元数据）
+        ▼
+  createAgentSession({ model, authStorage, ... })
+        │
+  SDK 发请求时按 model.provider 去 AuthStorage 取 key
+        │  → auth.json["glm"].key
+        ▼
+  POST https://open.bigmodel.cn/api/anthropic/v1/messages
+       Authorization: Bearer <token>
+       body: { model: "glm-5", ... }
+```
+
+> 💡 **ModelRegistry 不是从文件查的**——是 `ConfigManager.initialize` 启动时调 `applyProviderPrefs`，把 provider-prefs + auth.json 合起来调 SDK 的 `registerProvider` 提前注册到内存。所以运行时 ModelRegistry 已经有 glm/glm-5 这个实体了。
+
+### 四个"必须一致"
+
+任何一处名字对不上都会断链：
+
+| 错配 | 表现 |
+|---|---|
+| `auth.json` 的 key 名 ≠ provider-prefs 的 `name` | `applyProviderPrefs` 注册时报 `"apiKey" is required when defining models` |
+| provider-prefs 的 `name` ≠ model-prefs 的 `--provider` | `resolveModelPref` 报 `model not registered: <provider>/<modelId>` |
+| model-prefs 的 `--model-id` 不在 provider-prefs 的 `models[]` 里 | 同上（ModelRegistry 找不到这个 modelId） |
+| SOLVER.md 的 `model:` ≠ model-prefs 的 `id` | `resolvePromptSession` 报 `model pref not found: <name>` |
+
+### 为什么分四层、不直接 SOLVER.md 里写 `model: glm/glm-5`
+
+每层都有独立变化的理由：
+
+| 层 | 变什么 | 不影响谁 |
+|---|---|---|
+| **auth.json** | 换 token / 轮转 | 不动其他文件——SDK 拿新 key 继续跑 |
+| **provider-prefs** | 换网关 / 加新 model | SOLVER.md 不用改；多个 model-pref 共享一个 provider |
+| **model-prefs** | 同一个别名换底层 model（glm-5 → glm-5.2） | SOLVER.md 不用改 |
+| **SOLVER.md `model:`** | 这个 prompt 用哪个别名 | 其他 prompt 不受影响 |
+
+**举例**：你想让 SOLVER 从 glm-5 升级到 glm-5.2，只改一行：
+
+```bash
+bun run apps/cli/src/main.ts config model-prefs remove main-glm
+bun run apps/cli/src/main.ts config model-prefs add --id main-glm --provider glm --model-id glm-5.2
+```
+
+SOLVER.md 一个字都不用动——因为 prompt 只认别名 `main-glm`。
+
+这就是分层的好处：**每一层只关心下一层的接口，不耦合实现细节**。
+
+---
+
 ## 第五步：验证
 
 ### 5.1 跑第一个任务
