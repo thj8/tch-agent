@@ -47,7 +47,6 @@ tch-agent config providers add \
 tch-agent config model-prefs add \
   --id work-gpt4 \
   --provider my-gateway \
-  --provider-id my-gateway \
   --model-id gpt-4o
 ```
 
@@ -186,11 +185,9 @@ export type ModelConfigEntry = {
     id: string
     /** 内容 hash（可选） */
     hash?: string
-    /** Provider 名（对应 ProviderPrefEntry.id 或内置 Provider 名） */
+    /** SDK provider 名（openai / anthropic / glm / ...），ModelRegistry 查 model 用 */
     provider: string
-    /** Provider 偏好 ID（必填，指向某条 ProviderPrefEntry.id） */
-    providerId: string
-    /** 真实 model id（如 "gpt-4o"） */
+    /** 真实 model id（如 "gpt-4o" / "glm-5"） */
     modelId: string
     /** 默认推理强度（low / medium / high / xhigh） */
     thinkingLevel?: string
@@ -200,7 +197,7 @@ export type ModelConfigEntry = {
 **关键设计**：
 
 - 用 `& Partial<...>` 给 ModelConfigEntry 加了 SDK Model 的所有可选字段（maxTokens / contextWindow 等），用户可以覆盖默认值。
-- `provider` 和 `providerId` 分开且 `providerId` 必填：`provider` 是 SDK 层的 provider 名（openai / anthropic），`providerId` 指向用户的某条 Provider 偏好。后续 resolve model 时要用 `providerId` 把 baseUrl / apiKey 找出来，所以不能没有。
+- `provider` 是 SDK 层的 provider 名（ModelRegistry 用这个 key 查 model）。不需要外键指向 ProviderPrefEntry——`resolveModelPref` 直接在 ModelRegistry 里按 `provider + modelId` 查找，provider pref（baseUrl 等）在 `ConfigManager.initialize` 时已经 apply 到 ModelRegistry 了。
 
 ---
 
@@ -367,11 +364,10 @@ export class ConfigManager {
     /**
      * 加一条 Model 偏好。
      *
-     * providerId 必填——每个 Model 偏好必须挂在一个具体的 Provider 偏好下，
-     * 否则后续 resolve 时不知道用哪个 Provider 实例（baseUrl / apiKey）。
+     * provider 是 SDK 层的 provider 名（ModelRegistry 用这个 key 查 model）。
      */
     async addModelPref(
-        entry: Partial<ModelConfigEntry> & { provider: string; providerId: string; modelId: string },
+        entry: Partial<ModelConfigEntry> & { provider: string; modelId: string },
     ): Promise<AddResult> {
         const list = await this.listModelPrefs()
 
@@ -384,7 +380,6 @@ export class ConfigManager {
             ...entry,
             id,
             provider: entry.provider.trim(),
-            providerId: entry.providerId.trim(),
             modelId: entry.modelId.trim(),
             thinkingLevel: entry.thinkingLevel?.trim() || undefined,
         }
@@ -569,16 +564,14 @@ modelPrefsCmd
     .command("add")
     .description("Add a model preference")
     .option("-i, --id <id>", "Unique ID (auto-generated if not provided)")
-    .requiredOption("-p, --provider <provider>", "Provider name")
-    .requiredOption("-m, --model-id <modelId>", "Real model ID")
-    .requiredOption("--provider-id <providerId>", "Provider preference ID")
+    .requiredOption("-p, --provider <provider>", "Provider name (SDK key, e.g. anthropic / glm / openai)")
+    .requiredOption("-m, --model-id <modelId>", "Real model ID (e.g. glm-5 / claude-sonnet-4-5)")
     .option("-t, --thinking-level <level>", "Default thinking level (low/medium/high/xhigh)")
     .action(async (opts) => {
         const config = await ConfigManager.getInstance()
         const result = await config.addModelPref({
             id: opts.id,
             provider: opts.provider,
-            providerId: opts.providerId,
             modelId: opts.modelId,
             thinkingLevel: opts.thinkingLevel,
         })
@@ -738,7 +731,6 @@ my-gw           My Gateway          openai-completions  https://gateway.example.
 bun run apps/cli/src/main.ts config model-prefs add \
   --id work-gpt4 \
   --provider openai \
-  --provider-id my-gw \
   --model-id gpt-4o \
   --thinking-level medium
 

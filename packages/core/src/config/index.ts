@@ -102,33 +102,75 @@ export class ConfigManager {
   }
 
   /**
-   * 把 provider-prefs.json 应用到 ModelRegistry。
+   * 把 provider-prefs.json 应用到 ModelRegistry。每个 entry 二选一：
    *
-   * SDK registerProvider 不传 models 时走 override-only 模式：
-   * 把 SDK 内置 provider（如 anthropic / openai）的所有 model 的 baseUrl 换成新的，
-   * 复用 SDK 自带的 model 列表 + 价格 + contextWindow 等元数据。
+   * **A. 有 models** → full registration
+   *   注册一个全新 provider（name 可任意，如 "glm"），每个 model 用合理默认元数据
+   *   注册成 ModelRegistry 里的实体。SDK 不会再去找内置同名 provider。
+   *   适用：自定义网关 + 自定义 model 名（如智谱 anthropic-compat 端点用 glm-5）。
    *
-   * 用法：在 provider-prefs 里写一个 name="anthropic"、baseUrl=自定义端点 的 entry，
-   * SDK 内置 claude-* 模型就会指向新端点（智谱 anthropic-compat 端点会自动做 model 名映射）。
-   *
-   * 注意：provider 名必须匹配 SDK 内置 provider（anthropic / openai / google 等），
-   * 否则 override-only 不生效（SDK 找不到要 override 的内置 model 列表）。
+   * **B. 无 models** → override-only
+   *   SDK 把内置 provider（如 anthropic / openai）的所有内置 model 的 baseUrl 换成新值，
+   *   复用 SDK 自带的 model 元数据。
+   *   要求：name 必须是 SDK 内置 provider 名，否则 SDK 找不到要 override 的列表。
+   *   适用：兼容端点接受 SDK 内置 model 名（如 claude-*）的场景——但注意网关可能
+   *   把未知 model 名兜底映射到默认 model，结果不可预测。
    */
   private applyProviderPrefs(): void {
-    // 同步读，避免把 initialize 改成 async chain；provider-prefs 文件很小
     const file = Bun.file(this.providerPrefsPath())
     file.json().then((data) => {
       if (!Array.isArray(data)) return
       const entries = data as ProviderPrefEntry[]
       for (const entry of entries) {
-        const providerName = entry.name
+        const providerName = entry.name?.trim()
         const baseUrl = entry.baseUrl?.trim()
         if (!providerName || !baseUrl) continue
+
+        const models = (entry.models ?? [])
+          .map((m) => m.trim())
+          .filter(Boolean)
+
         try {
-          this.models.registerProvider(providerName, {
-            baseUrl,
-            ...(entry.api ? { api: entry.api as Api } : {}),
-          })
+          if (models.length > 0) {
+            // A. full registration：每个 model 用合理默认值
+            //    SDK 校验要求带 models 时必须传 apiKey；从 AuthStorage 读对应
+            //    provider 名的 key（request 时 AuthStorage 也是优先源，行为一致）
+            const storedKey = this.getApiKeyValue(providerName)
+            const providerCfg: {
+              baseUrl: string
+              api?: Api
+              apiKey?: string
+              models: Array<{
+                id: string
+                name: string
+                reasoning: boolean
+                input: ("text" | "image")[]
+                cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
+                contextWindow: number
+                maxTokens: number
+              }>
+            } = {
+              baseUrl,
+              ...(entry.api ? { api: entry.api as Api } : {}),
+              ...(storedKey ? { apiKey: storedKey } : {}),
+              models: models.map((id) => ({
+                id,
+                name: id,
+                reasoning: false,
+                input: ["text" as const, "image" as const],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000,
+                maxTokens: 16384,
+              })),
+            }
+            this.models.registerProvider(providerName, providerCfg)
+          } else {
+            // B. override-only
+            this.models.registerProvider(providerName, {
+              baseUrl,
+              ...(entry.api ? { api: entry.api as Api } : {}),
+            })
+          }
         } catch (error) {
           // 不让一个失败的 provider 注册阻塞整个 initialize
           console.error(
@@ -139,7 +181,7 @@ export class ConfigManager {
         }
       }
     }).catch(() => {
-      // 文件不存在或解析失败 → 无 provider pref，静默
+      // 文件不存在或解析失败 → 静默
     })
   }
 
@@ -247,12 +289,18 @@ You are a helpful agent that solves tasks step by step.
       return { id, rejected: `provider pref id "${id}" already exists` }
     }
 
+    // 规范 models：trim、丢空串、去重、丢 undefined
+    const models = Array.from(
+      new Set((entry.models ?? []).map((m) => m.trim()).filter(Boolean)),
+    )
+
     const newEntry: ProviderPrefEntry = {
       id,
       name: entry.name,
       api: entry.api?.trim() || undefined,
       baseUrl: entry.baseUrl?.trim() || undefined,
       apiKey: entry.apiKey?.trim() || undefined,
+      ...(models.length > 0 ? { models } : {}),
     }
 
     await this.writeProviderPrefs([...list, newEntry])
@@ -312,7 +360,7 @@ You are a helpful agent that solves tasks step by step.
    * @returns 新分配的 ID（如果用户没传 id，自动生成）
    */
   async addModelPref(
-    entry: Partial<ModelConfigEntry> & { provider: string; providerId: string; modelId: string },
+    entry: Partial<ModelConfigEntry> & { provider: string; modelId: string },
   ): Promise<AddResult> {
     const list = await this.listModelPrefs()
 
@@ -325,7 +373,6 @@ You are a helpful agent that solves tasks step by step.
       ...entry,
       id,
       provider: entry.provider.trim(),
-      providerId: entry.providerId.trim(),
       modelId: entry.modelId.trim(),
       thinkingLevel: entry.thinkingLevel?.trim() || undefined,
     }

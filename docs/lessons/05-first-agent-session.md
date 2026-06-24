@@ -282,14 +282,16 @@ private async initialize(): Promise<void> {
 }
 
 /**
- * 把 provider-prefs.json 应用到 ModelRegistry。
+ * 把 provider-prefs.json 应用到 ModelRegistry。每个 entry 二选一：
  *
- * SDK registerProvider 不传 models 时走 override-only 模式：
- * 把 SDK 内置 provider（如 anthropic）的所有 model 的 baseUrl 换成新值，
- * 复用 SDK 自带的 model 元数据。
+ * **A. 有 models** → full registration
+ *   注册全新 provider（name 可任意，如 "glm"），每个 model 用合理默认元数据
+ *   注册成 ModelRegistry 里的实体。SDK 校验要求同时传 apiKey（从 AuthStorage
+ *   按 provider 名查；request 时 AuthStorage 也是优先源，行为一致）。
  *
- * provider 名必须匹配 SDK 内置（anthropic / openai / google 等），
- * 否则 override-only 不生效。
+ * **B. 无 models** → override-only
+ *   SDK 把内置 provider（如 anthropic）的所有内置 model 的 baseUrl 换成新值，
+ *   复用 SDK 自带的 model 元数据。要求 name 必须是 SDK 内置 provider 名。
  */
 private applyProviderPrefs(): void {
     const file = Bun.file(this.providerPrefsPath())
@@ -297,15 +299,39 @@ private applyProviderPrefs(): void {
         if (!Array.isArray(data)) return
         const entries = data as ProviderPrefEntry[]
         for (const entry of entries) {
+            const providerName = entry.name?.trim()
             const baseUrl = entry.baseUrl?.trim()
-            if (!entry.name || !baseUrl) continue
+            if (!providerName || !baseUrl) continue
+
+            const models = (entry.models ?? []).map((m) => m.trim()).filter(Boolean)
+
             try {
-                this.models.registerProvider(entry.name, {
-                    baseUrl,
-                    ...(entry.api ? { api: entry.api as Api } : {}),
-                })
+                if (models.length > 0) {
+                    // A. full registration
+                    const storedKey = this.getApiKeyValue(providerName)
+                    const providerCfg = {
+                        baseUrl,
+                        ...(entry.api ? { api: entry.api as Api } : {}),
+                        ...(storedKey ? { apiKey: storedKey } : {}),
+                        models: models.map((id) => ({
+                            id, name: id,
+                            reasoning: false,
+                            input: ["text", "image"],
+                            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                            contextWindow: 128000,
+                            maxTokens: 16384,
+                        })),
+                    }
+                    this.models.registerProvider(providerName, providerCfg)
+                } else {
+                    // B. override-only
+                    this.models.registerProvider(providerName, {
+                        baseUrl,
+                        ...(entry.api ? { api: entry.api as Api } : {}),
+                    })
+                }
             } catch (error) {
-                console.error(`[warn] failed to register provider "${entry.name}": ${
+                console.error(`[warn] failed to register provider "${providerName}": ${
                     error instanceof Error ? error.message : String(error)
                 }`)
             }
@@ -316,7 +342,9 @@ private applyProviderPrefs(): void {
 }
 ```
 
-关键：用 `entry.name`（不是 `entry.id`）作为 SDK provider 名——id 是用户起的本地 ID（`prov_abc`），name 才是 SDK 认的 provider key（`anthropic`）。
+关键：
+- 用 `entry.name`（不是 `entry.id`）作为 SDK provider 名——id 是用户起的本地 ID（`prov_abc`），name 才是 SDK 认的 provider key
+- full registration 时 `apiKey` 必须传，从 AuthStorage 按 provider 名查；所以 `config api-keys set <name>` 的 key 名要和 provider 名一致
 
 
 ---
@@ -618,53 +646,77 @@ program
 
 ## 第四步：配置一个真实可用的环境
 
-本项目跑智谱 GLM（走 anthropic 兼容端点）。SDK 内置 anthropic provider，只要把 baseUrl override 到 `open.bigmodel.cn`，复用 SDK 自带的 claude-* 模型名，智谱端点会自动映射到对应的 glm 模型。
+本项目跑智谱 GLM（走 anthropic 兼容端点 `https://open.bigmodel.cn/api/anthropic`）。我们要让 SDK 用**真实的 glm model 名**（glm-5 / glm-5.2），而不是发 `claude-*` 让网关兜底映射——后者实际跑的 model 不可预测。
+
+`applyProviderPrefs` 支持两种注册模式：
+
+| 模式 | 触发条件 | 行为 |
+|---|---|---|
+| **A. full registration** | provider-prefs entry 带 `models` 字段 | 注册全新 provider（name 可任意），每个 model 用合理默认元数据注册成 ModelRegistry 实体 |
+| **B. override-only** | provider-prefs entry 不带 `models` | name 必须是 SDK 内置 provider（anthropic/openai/...），替换 baseUrl 复用 SDK 自带 model 列表 |
+
+GLM 用模式 A——provider 名 `glm`，自定义 model 列表 `[glm-5, glm-5.2]`。
 
 > 🔒 **API Key 安全**：所有 key 写到 `~/.tch-agent/config/auth.json`（已 gitignore）。**永远不要**把 key 写进代码、测试、commit message、文档示例。
 
 ### 4.1 加 API Key
 
 ```bash
-# 替换成你的真实 token（智谱 anthropic 兼容端点的 token）
-bun run apps/cli/src/main.ts config api-keys set anthropic <your-token>
+# 替换成你的真实 token（智谱 anthropic 兼容端点）
+# 注意：key 名要和下一步 provider 名一致（都是 glm）
+bun run apps/cli/src/main.ts config api-keys set glm <your-token>
 ```
 
-写入 `~/.tch-agent/config/auth.json`，全局 `.tch-agent/` 已 gitignore。
+写入 `~/.tch-agent/config/auth.json`。applyProviderPrefs 注册时会按 provider 名查 AuthStorage 把 key 传给 SDK（SDK 校验 full registration 必须带 apiKey）。
 
-### 4.2 加 Provider 偏好（baseUrl override）
+### 4.2 加 Provider 偏好（full registration + 自定义 model 列表）
 
 ```bash
 bun run apps/cli/src/main.ts config providers add \
-  --id anthropic \
-  --name anthropic \
+  --id glm \
+  --name glm \
   --api anthropic-messages \
-  --base-url https://open.bigmodel.cn/api/anthropic
+  --base-url https://open.bigmodel.cn/api/anthropic \
+  --model glm-5 \
+  --model glm-5.2
 ```
 
-`ConfigManager.initialize` 会读 `provider-prefs.json`，对每个 entry 调 `models.registerProvider(name, { baseUrl, api })`。SDK 不传 `models` 时走 **override-only 模式**：把内置 anthropic provider 所有 claude-* 模型的 baseUrl 换成新值，复用 SDK 的 model 元数据（价格 / contextWindow 等）。
+`--model` 可重复，每个会成为 ModelRegistry 里 `glm` provider 下的真实 Model 实体。ConfigManager.initialize 时 `applyProviderPrefs` 会调：
 
-> ⚠️ **provider 名必须匹配 SDK 内置 provider**（`anthropic` / `openai` / `google` 等），否则 override-only 不生效——SDK 找不到要 override 的内置 model 列表。要注册一个全新 provider（自定义 model 名）需要在 `registerProvider` 里显式传 `models` 数组，本课不展开。
+```ts
+this.models.registerProvider("glm", {
+    baseUrl: "https://open.bigmodel.cn/api/anthropic",
+    api: "anthropic-messages",
+    apiKey: <从 auth.json 读>,      // SDK 校验要求
+    models: [
+        { id: "glm-5",   name: "glm-5",   reasoning: false, input: ["text","image"],
+          cost: { ...0 }, contextWindow: 128000, maxTokens: 16384 },
+        { id: "glm-5.2", name: "glm-5.2", ... },
+    ],
+})
+```
+
+默认元数据（contextWindow / maxTokens / cost）是合理猜测，够用；要精确值以后扩展 `--model` 选项支持 per-model 参数即可。
 
 ### 4.3 加 Model 偏好
 
 ```bash
 bun run apps/cli/src/main.ts config model-prefs add \
-  --id default-claude \
-  --provider anthropic \
-  --provider-id anthropic \
-  --model-id claude-sonnet-4-5
+  --id main-glm \
+  --provider glm \
+  --model-id glm-5
 ```
 
-`claude-sonnet-4-5` 是 SDK 内置模型名，bigmodel 端点会映射到对应的 glm 模型。模型名一定要用 SDK 内置列表里有的（`grep -oE '"claude-[a-z0-9-]+"' node_modules/@mariozechner/pi-ai/dist/models.generated.js | sort -u`）。
+`--provider` 必须匹配上一步的 provider 名（`glm`）；`--model-id` 必须是 provider 的 models 列表里的（`glm-5` 或 `glm-5.2`）。
 
 ### 4.4 让 SOLVER prompt 用这个 model
 
-编辑 `~/.tch-agent/config/prompts/SOLVER.md`，加一行 `model: default-claude`：
+编辑 `~/.tch-agent/config/prompts/SOLVER.md`，加一行 `model: main-glm`：
 
 ```markdown
 ---
 description: General-purpose solver for any task
-model: default-claude
+model: main-glm
 tools:
   - read
   - bash
@@ -725,8 +777,9 @@ ls ~/.tch-agent/solvers/
 ls ~/.tch-agent/solvers/<id>/session/
 # 看到一个或多个 .jsonl 文件
 
-cat ~/.tch-agent/solvers/<id>/session/*.jsonl | head -5
-# 看到对话历史（每行一个 JSON 事件）
+head -2 ~/.tch-agent/solvers/<id>/session/*.jsonl
+# 第二行 model_change 应该是 provider+modelId 都是你配的（如 glm/glm-5），
+# 不是 anthropic/claude-sonnet-4-5（那是 override-only + 兜底映射的征兆）
 ```
 
 ### 5.4 类型检查
@@ -739,38 +792,57 @@ bun run typecheck
 
 ## 第六步：故障排查
 
-### 问题 1：`model not registered: anthropic/claude-sonnet-4-5`
+### 问题 1：`model not registered: glm/glm-5`
 
-**原因**：provider-prefs 里没有 `name: "anthropic"` 的 entry，或者 entry 的 `name` 写成了别的（如 `glm` / `bigmodel`）。
+**原因**：三种可能：
+- provider-prefs 里没有 `name: "glm"` 的 entry
+- entry 的 `name` 和 model-prefs 的 `--provider` 不一致
+- ConfigManager 是单例，改了 provider-prefs 后没新起进程
 
-**解决**：override-only 模式要求 provider 名匹配 SDK 内置（anthropic / openai 等）。改名即可：
+**解决**：核对三处名字一致，然后**新起一个进程**（重新跑命令）：
 
 ```bash
-bun run apps/cli/src/main.ts config providers remove anthropic  # 删掉错的
-bun run apps/cli/src/main.ts config providers add \
-  --id anthropic --name anthropic \
-  --api anthropic-messages \
-  --base-url https://open.bigmodel.cn/api/anthropic
+bun run apps/cli/src/main.ts config providers list
+# 确认有 glm 条目，且 MODELS 列含 glm-5
+
+bun run apps/cli/src/main.ts config model-prefs list
+# 确认 main-glm 的 PROVIDER 是 glm、MODEL_ID 是 glm-5
 ```
 
-然后重跑（ConfigManager 是单例，缓存了旧的；新进程会重新读 provider-prefs）。
+### 问题 2：`[warn] failed to register provider "glm": "apiKey" or "oauth" is required when defining models`
 
-### 问题 2：`AuthStorage has no key for "anthropic"`
+**原因**：full registration 模式 SDK 要求带 `apiKey`。`applyProviderPrefs` 按 provider 名查 AuthStorage——你设的 api-key 名必须和 provider 名一致。
 
-**原因**：忘了 `config api-keys set anthropic <token>`。
+**解决**：把 key 设到对应 provider 名下：
 
-**解决**：跑那条命令，key 会写到 `~/.tch-agent/config/auth.json`。
+```bash
+bun run apps/cli/src/main.ts config api-keys set glm <your-token>
+```
 
-### 问题 3：跑起来但 LLM 没调工具
+然后再跑命令（新进程）。auth.json 里的 key 名要和 provider-prefs.json 里的 `name` 字段完全一致。
+
+### 问题 3：跑起来但 `model_change` 里 modelId 是 `claude-*` 不是 `glm-*`
+
+**原因**：还在走 override-only + bigmodel 兜底映射。你之前可能用 lesson 旧版本配过 anthropic provider pref。
+
+**解决**：删掉旧的 anthropic provider pref，按第四步重新配 glm：
+
+```bash
+bun run apps/cli/src/main.ts config providers remove anthropic
+```
+
+然后 `cat ~/.tch-agent/solvers/<id>/session/*.jsonl | head -2`，第二行 `model_change` 应该是 `"provider":"glm","modelId":"glm-5"`。
+
+### 问题 4：跑起来但 LLM 没调工具
 
 **原因**：要么 model 不支持 tool calling，要么 prompt.meta.tools 漏了。
 
 **解决**：
 - 确认 `prompt show SOLVER` 输出的 `tools:` 行包含 `bash`
-- 智谱 glm-4 / glm-5 系列都支持 tool calling，如果不行换 `claude-sonnet-4-5`（bigmodel 端点会映射）
+- glm-5 / glm-5.2 都支持 tool calling
 - 在 prompt 里强化："You MUST use tools to interact with the environment."
 
-### 问题 4：`cannot add command 'solver' as already have command 'solver'`
+### 问题 5：`cannot add command 'solver' as already have command 'solver'`
 
 **原因**：commander 把 `.command("solver list")` 当成名为 `solver` 的命令注册了，和 `.command("solver")` 冲突。
 

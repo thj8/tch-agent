@@ -128,6 +128,12 @@ async function main() {
     .option("-a, --api <api>", "Protocol (openai-completions / anthropic-messages /...)")
     .option("-b, --base-url <url>", "Base URL")
     .requiredOption("-n, --name <name>", "Display name")
+    .option(
+      "-m, --model <id>",
+      "Custom model ID (full registration; can repeat)",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [],
+    )
     .action(async (opts) => {
       const config = await ConfigManager.getInstance()
       const result = await config.addProviderPref({
@@ -135,6 +141,7 @@ async function main() {
         name: opts.name,
         api: opts.api,
         baseUrl: opts.baseUrl,
+        ...(opts.model.length > 0 ? { models: opts.model } : {}),
       })
 
       if (result.rejected) {
@@ -156,10 +163,11 @@ async function main() {
         return
       }
 
-      console.log("ID\t\tNAME\t\t\tAPI\t\t\tBASE_URL")
-      console.log("--\t\t----\t\t\t---\t\t\t--------")
+      console.log("ID\t\tNAME\t\t\tAPI\t\t\tBASE_URL\t\t\tMODELS")
+      console.log("--\t\t----\t\t\t---\t\t\t--------\t\t\t------")
       for (const p of list) {
-        console.log(`${p.id}\t\t${p.name.slice(0, 20).padEnd(20)}\t${(p.api ?? "-").slice(0, 20).padEnd(20)}\t${p.baseUrl ?? "-"}`)
+        const models = (p.models ?? []).join(",") || "-"
+        console.log(`${p.id}\t\t${p.name.slice(0, 20).padEnd(20)}\t${(p.api ?? "-").slice(0, 20).padEnd(20)}\t${p.baseUrl ?? "-"}\t\t${models}`)
       }
 
     })
@@ -184,16 +192,14 @@ async function main() {
     .command("add")
     .description("Add a model preference")
     .option("-i, --id <id>", "Unique ID (auto-generated if not provided)")
-    .requiredOption("-p, --provider <provider>", "Provider name")
-    .requiredOption("-m, --model-id <modelId>", "Real model ID")
-    .requiredOption("--provider-id <providerId>", "Provider preference ID")
+    .requiredOption("-p, --provider <provider>", "Provider name (SDK key, e.g. anthropic / glm / openai)")
+    .requiredOption("-m, --model-id <modelId>", "Real model ID (e.g. glm-5 / claude-sonnet-4-5)")
     .option("-t, --thinking-level <level>", "Default thinking level (low/medium/high/xhigh)")
     .action(async (opts) => {
       const config = await ConfigManager.getInstance()
       const result = await config.addModelPref({
         id: opts.id,
         provider: opts.provider,
-        providerId: opts.providerId,
         modelId: opts.modelId,
         thinkingLevel: opts.thinkingLevel,
       })

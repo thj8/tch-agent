@@ -66,6 +66,23 @@ describe("ConfigManager - Provider 偏好", () => {
     expect(await cfg.removeProviderPref("p1")).toBe(false)
   })
 
+  test("add 带 models 持久化，空串/重复被规范", async () => {
+    await cfg.addProviderPref({
+      id: "p1",
+      name: "glm",
+      baseUrl: "https://x",
+      models: ["glm-5", "  ", "glm-5.2", "glm-5"],
+    })
+    const list = await cfg.listProviderPrefs()
+    expect(list[0].models).toEqual(["glm-5", "glm-5.2"])
+  })
+
+  test("add 不带 models 时 entry 不含 models 字段（走 override-only）", async () => {
+    await cfg.addProviderPref({ id: "p1", name: "anthropic", baseUrl: "https://x" })
+    const list = await cfg.listProviderPrefs()
+    expect(list[0].models).toBeUndefined()
+  })
+
   test("listProviderPrefs 文件不存在或损坏时返回空数组", async () => {
     ConfigManager.resetInstance()
     const empty = await ConfigManager.getInstance(join(dir, "no-such"))
@@ -77,7 +94,6 @@ describe("ConfigManager - Model 偏好", () => {
   test("add 自动生成 model_ 前缀 id", async () => {
     const r = await cfg.addModelPref({
       provider: "openai",
-      providerId: "p1",
       modelId: "gpt-4o",
     })
     expect(r.rejected).toBeUndefined()
@@ -91,7 +107,6 @@ describe("ConfigManager - Model 偏好", () => {
   test("thinkingLevel 空串规范成 undefined", async () => {
     await cfg.addModelPref({
       provider: "openai",
-      providerId: "p1",
       modelId: "gpt-4o",
       thinkingLevel: "  ",
     })
@@ -99,19 +114,19 @@ describe("ConfigManager - Model 偏好", () => {
   })
 
   test("重复 model id 被 rejected", async () => {
-    await cfg.addModelPref({ id: "m1", provider: "a", providerId: "p", modelId: "x" })
-    const r = await cfg.addModelPref({ id: "m1", provider: "b", providerId: "p", modelId: "y" })
+    await cfg.addModelPref({ id: "m1", provider: "a", modelId: "x" })
+    const r = await cfg.addModelPref({ id: "m1", provider: "b", modelId: "y" })
     expect(r.rejected).toContain("already exists")
   })
 
   test("remove 按 id 删除，不存在返回 false", async () => {
-    await cfg.addModelPref({ id: "m1", provider: "a", providerId: "p", modelId: "x" })
+    await cfg.addModelPref({ id: "m1", provider: "a", modelId: "x" })
     expect(await cfg.removeModelPref("m1")).toBe(true)
     expect(await cfg.removeModelPref("m1")).toBe(false)
   })
 
   test("update 按 id 合并", async () => {
-    await cfg.addModelPref({ id: "m1", provider: "a", providerId: "p", modelId: "x" })
+    await cfg.addModelPref({ id: "m1", provider: "a", modelId: "x" })
     const u = await cfg.updateModelPref("m1", { thinkingLevel: "high" })
     expect(u?.thinkingLevel).toBe("high")
     expect(u?.modelId).toBe("x")
