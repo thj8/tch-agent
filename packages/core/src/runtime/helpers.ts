@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { mkdir, stat } from "node:fs/promises"
-import { dirname, resolve } from "node:path"
+import { basename, dirname, resolve } from "node:path"
 import { TCH_AGENT_HOME_DIR } from "../config/index"
 
 /** Docker image label：把 Dockerfile 的 sha256 存到镜像 label，便于增量构建。 */
@@ -109,4 +109,107 @@ WORKDIR /root/workspace
 # 默认命令（会被 docker run 的 cmd 覆盖）
 CMD ["/bin/bash"]
 `
+}
+
+/** 当前进程是否跑在 Bun runtime 下 */
+function isBunRuntime(): boolean {
+    const execName = basename(process.execPath).toLowerCase()
+    return execName === "bun" || execName === "bun.exe"
+}
+
+/**
+ * 容器内 package.json 的占位内容。
+ * Bun 需要它把 cwd 当成包根。
+ */
+const GENERATED_RUNTIME_PACKAGE_JSON = {
+    name: "tch-agent-runtime",
+    version: "0.0.1",
+    private: true,
+    type: "module",
+}
+
+/**
+ * 【dev 模式】用 Bun 现场编译一份 linux-x64 solver binary。
+ *
+ * 让本地改代码后，下次启动 solver 自动用最新版本。
+ */
+export async function ensureSolverBinary(): Promise<string> {
+    const binDir = RUNTIME_SELF_DIR
+    const binPath = resolve(binDir, "tch-agent-linux-x64")
+
+    const projectRoot = resolve(import.meta.dir, "../../../..")
+    const buildScript = resolve(projectRoot, "scripts/build.ts")
+
+    await mkdir(binDir, { recursive: true })
+
+    console.log(`[build] compiling solver binary to ${binPath}...`)
+    const proc = Bun.spawn(
+        ["bun", buildScript, "bun-linux-x64-baseline", binPath],
+        {
+            cwd: projectRoot,
+            stdout: "inherit",
+            stderr: "inherit",
+        },
+    )
+    const exitCode = await proc.exited
+    if (exitCode !== 0) {
+        throw new Error(`Failed to compile solver binary (exit ${exitCode})`)
+    }
+
+    await Bun.write(
+        resolve(binDir, "package.json"),
+        JSON.stringify(GENERATED_RUNTIME_PACKAGE_JSON, null, 2),
+    )
+
+    return binPath
+}
+
+/**
+ * 确保 ~/.tch-agent/runtime/self/package.json 存在。
+ * 容器内 Bun 需要它把 cwd 识别为包根。
+ */
+async function ensureRuntimePackageManifest(): Promise<string> {
+    const binDir = RUNTIME_SELF_DIR
+    const path = resolve(binDir, "package.json")
+    await mkdir(binDir, { recursive: true })
+    await Bun.write(path, JSON.stringify(GENERATED_RUNTIME_PACKAGE_JSON, null, 2))
+    return path
+}
+
+/**
+ * 决定容器内用什么 binary 跑 solver，返回挂载和启动命令。
+ *
+ * 三种来源（按优先级）：
+ *   1. Bun runtime (dev) → 现场编译 linux-x64 binary
+ *   2. Linux x64 宿主 → 复用宿主 binary
+ *   3. 其他平台 → 嵌入式 binary（本课时简化为 throw）
+ *
+ * @returns { binds, cmd }
+ *   - binds: docker -v 参数
+ *   - cmd: 容器启动命令
+ */
+export async function resolveSolverInjection(): Promise<{
+    binds: string[]
+    cmd: string[]
+}> {
+    let binary: string
+    const packageJson = await ensureRuntimePackageManifest()
+
+    if (isBunRuntime()) {
+        binary = await ensureSolverBinary()
+    } else if (process.platform === "linux" && process.arch === "x64") {
+        binary = process.execPath
+    } else {
+        throw new Error(
+            `Unsupported platform: ${process.platform}/${process.arch}. Run under Bun instead.`,
+        )
+    }
+
+    return {
+        binds: [
+            `${binary}:/opt/tch-agent/tch-agent:ro`,
+            `${packageJson}:/opt/tch-agent/package.json:ro`,
+        ],
+        cmd: ["/opt/tch-agent/tch-agent", "solver", "rpc"],
+    }
 }

@@ -396,6 +396,52 @@ async function main() {
       }
     })
 
+  runtimeCmd
+    .command("launch")
+    .description("Launch a solver container")
+    .requiredOption("-p, --prompt <name>", "Prompt name")
+    .argument("<task>", "Task")
+    .action(async (task: string, opts: { prompt: string }) => {
+      const { ConfigManager, RuntimeManager } = await import("@my/core")
+      const config = await ConfigManager.getInstance()
+      const runtime = new RuntimeManager(config)
+
+      await runtime.init((msg) => console.log(msg))
+
+      const solver = await runtime.launch(opts.prompt, task)
+      console.log(`\n✓ Launched solver ${solver.id} (container: ${solver.containerId})`)
+      console.log(`Press Ctrl+C to stop...\n`)
+
+      process.on("SIGINT", async () => {
+        console.log("\nStopping...")
+        await runtime.stopSolver(solver.id)
+        process.exit(0)
+      })
+
+      await new Promise(() => {})
+    })
+
+  runtimeCmd
+    .command("list")
+    .description("List all tracked solver instances")
+    .action(async () => {
+      const { ConfigManager, RuntimeManager } = await import("@my/core")
+      const config = await ConfigManager.getInstance()
+      const runtime = new RuntimeManager(config)
+      const list = runtime.list()
+
+      if (list.length === 0) {
+        console.log("(no solvers)")
+        return
+      }
+
+      console.log("ID\t\tSTATUS\t\tPROMPT\t\tCONTAINER")
+      console.log("--\t\t------\t\t------\t\t---------")
+      for (const s of list) {
+        console.log(`${s.id}\t\t${s.status}\t\t${s.promptName}\t\t${s.containerId}`)
+      }
+    })
+
   await program.parseAsync(process.argv)
 }
 

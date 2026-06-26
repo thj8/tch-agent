@@ -1,12 +1,16 @@
-import Dockerode from "dockerode"
+import type Dockerode from "dockerode"
+import { mkdir } from "node:fs/promises"
 import { dirname } from "node:path"
+import type { Subprocess } from "bun"
 import { ConfigManager } from "../config/index"
-import type { ContainerConfig, SolverEventHandler } from "./types"
+import type { ContainerConfig, SolverEventHandler, SolverInstance } from "./types"
+import { solverDir, solverSessionDir, solverWorkspaceDir } from "./types"
 import {
     DOCKERFILE_HASH_LABEL,
     getSolverDockerfileContent,
     hashDockerfileContent,
     resolveDockerfilePath,
+    resolveSolverInjection,
 } from "./helpers"
 
 /**
@@ -20,23 +24,38 @@ import {
  * 与 ChallengeManager 的边界：
  *   - ChallengeManager 决定"什么时候 launch / stop"。
  *   - RuntimeManager 负责怎么实际操作 Docker。
+ *
+ * dockerode 用 dynamic import 加载，避免 Bun.build compile 时
+ * 静态拉到 ssh2 → cpu-features（原生包，本机构建失败）的传递依赖。
+ * 容器内跑 solver rpc 路径根本不会触达 dockerode。
  */
 export class RuntimeManager {
-    private docker: Dockerode
+    private dockerPromise: Promise<Dockerode> | undefined
     private config: ContainerConfig
     private hostConfig: ConfigManager
     private eventHandlers: SolverEventHandler[] = []
+    /** solverId → Subprocess 句柄 */
+    private procs = new Map<string, Subprocess<"pipe", "pipe", "pipe">>()
+    /** solverId → SolverInstance 元数据 */
+    private solvers = new Map<string, SolverInstance>()
 
     /**
      * @param config ConfigManager（用于读 host settings）
      */
     constructor(config: ConfigManager) {
-        this.docker = new Dockerode()
         this.hostConfig = config
         this.config = {
             image: "tch-agent:latest",
             binds: [],
         }
+    }
+
+    /** 懒加载 dockerode 单例 */
+    private getDocker(): Promise<Dockerode> {
+        if (!this.dockerPromise) {
+            this.dockerPromise = import("dockerode").then((m) => new m.default())
+        }
+        return this.dockerPromise
     }
 
     /**
@@ -73,7 +92,7 @@ export class RuntimeManager {
      */
     async ping(): Promise<boolean> {
         try {
-            await this.docker.ping()
+            await (await this.getDocker()).ping()
             return true
         } catch {
             return false
@@ -86,7 +105,8 @@ export class RuntimeManager {
     async hasImage(image?: string): Promise<boolean> {
         const imageName = image ?? this.config.image
         try {
-            await this.docker.getImage(imageName).inspect()
+            const docker = await this.getDocker()
+            await docker.getImage(imageName).inspect()
             return true
         } catch {
             return false
@@ -123,7 +143,8 @@ export class RuntimeManager {
     /** 从镜像 label 读 Dockerfile hash */
     private async getImageDockerfileHash(image: string): Promise<string | undefined> {
         try {
-            const info = await this.docker.getImage(image).inspect()
+            const docker = await this.getDocker()
+            const info = await docker.getImage(image).inspect()
             const labels = info.Config?.Labels ?? {}
             return (labels as Record<string, string>)[DOCKERFILE_HASH_LABEL]
         } catch {
@@ -184,5 +205,217 @@ export class RuntimeManager {
      */
     getConfig(): ContainerConfig {
         return this.config
+    }
+
+    /**
+     * 拉起一个 Solver 容器。
+     *
+     * 流程：
+     *   1. 生成 solverId
+     *   2. mkdir workspace / session / base
+     *   3. 决定 binary injection
+     *   4. 拼 docker run 命令
+     *   5. Bun.spawn 拉起容器，拿到 stdin/stdout pipe
+     *   6. 启动 readStream（监听容器 stdout）
+     *
+     * 注意：本课时**不做 init 握手**，下一课再补。
+     * 这里容器能跑起来 + 事件流能转发就 OK。
+     *
+     * @param promptName 用哪个 prompt
+     * @param task 初始 task 文本
+     * @param solverEnv 注入容器的环境变量
+     */
+    async launch(
+        promptName: string,
+        task: string,
+        solverEnv: Record<string, string> = {},
+    ): Promise<SolverInstance> {
+        const id = crypto.randomUUID().slice(0, 8)
+        const name = `tch-solver-${id}`
+
+        const solver: SolverInstance = {
+            id,
+            containerId: name,
+            name,
+            promptName,
+            task,
+            challengeId: solverEnv.TCH_CHALLENGE_ID,
+            status: "starting",
+            createdAt: Date.now(),
+        }
+        this.solvers.set(id, solver)
+
+        const baseDir = solverDir(id)
+        const sessionDir = solverSessionDir(id)
+        const workspaceDir = solverWorkspaceDir(id)
+        const containerRuntimeDir = "/runtime"
+        const containerWorkspaceDir = "/root/workspace"
+
+        await mkdir(baseDir, { recursive: true })
+        await mkdir(sessionDir, { recursive: true })
+        await mkdir(workspaceDir, { recursive: true })
+
+        const injection = await resolveSolverInjection()
+
+        const binds = [
+            ...(this.config.binds ?? []),
+            `${baseDir}:${containerRuntimeDir}`,
+            `${workspaceDir}:${containerWorkspaceDir}`,
+            ...injection.binds,
+        ]
+
+        const envPairs: string[] = []
+        for (const [k, v] of Object.entries(this.config.env ?? {})) {
+            envPairs.push(`${k}=${v}`)
+        }
+        for (const [k, v] of Object.entries(solverEnv)) {
+            envPairs.push(`${k}=${v}`)
+        }
+
+        const args: string[] = [
+            "docker", "run",
+            "-i",
+            "--platform", "linux/amd64",
+            "--network", this.config.networkMode ?? "host",
+            "--name", name,
+            "-w", containerWorkspaceDir,
+            "--rm",
+        ]
+        for (const bind of binds) {
+            args.push("-v", bind)
+        }
+        for (const envVar of envPairs) {
+            args.push("-e", envVar)
+        }
+        args.push(this.config.image)
+        args.push(...injection.cmd)
+
+        console.log(`[runtime] launching solver ${id}...`)
+        console.log(`[runtime] cmd: ${args.join(" ")}`)
+
+        const proc = Bun.spawn(args, {
+            stdin: "pipe",
+            stdout: "pipe",
+            stderr: "pipe",
+        })
+
+        this.procs.set(id, proc)
+        solver.status = "running"
+
+        this.readStream(id, proc)
+
+        return solver
+    }
+
+    /**
+     * 列出所有活跃 solver。
+     */
+    list(): SolverInstance[] {
+        return [...this.solvers.values()]
+    }
+
+    /**
+     * 获取一个 solver 的元数据。
+     */
+    get(solverId: string): SolverInstance | undefined {
+        return this.solvers.get(solverId)
+    }
+
+    /**
+     * 优雅停止一个 solver。
+     */
+    async stopSolver(solverId: string): Promise<void> {
+        const solver = this.solvers.get(solverId)
+        if (!solver) throw new Error(`Solver ${solverId} not found`)
+
+        solver.status = "stopping"
+        const proc = this.procs.get(solverId)
+
+        try {
+            const stopProc = Bun.spawn(
+                ["docker", "stop", solver.containerId],
+                { stdout: "ignore", stderr: "ignore" },
+            )
+            await stopProc.exited
+        } catch {
+            // 容器可能已经停了
+        }
+
+        if (proc) {
+            try {
+                proc.kill()
+            } catch {}
+        }
+
+        this.procs.delete(solverId)
+        solver.status = "stopped"
+    }
+
+    /**
+     * 读容器的 stdout，把每行 print 出来。
+     *
+     * 本课时简化：不解析 JSON，直接 print（下一课时改成事件流）。
+     * 同时监听 stderr，便于排查容器启动失败。
+     */
+    private readStream(
+        solverId: string,
+        proc: Subprocess<"pipe", "pipe", "pipe">,
+    ): void {
+        const decoder = new TextDecoder()
+        ;(async () => {
+            const reader = proc.stdout.getReader()
+            let buffer = ""
+            try {
+                while (true) {
+                    const { done, value } = await reader.read()
+                    if (done) break
+                    buffer += decoder.decode(value, { stream: true })
+
+                    while (true) {
+                        const idx = buffer.indexOf("\n")
+                        if (idx === -1) break
+                        const line = buffer.slice(0, idx).trim()
+                        buffer = buffer.slice(idx + 1)
+                        if (line) {
+                            console.log(`[${solverId}] ${line}`)
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error(`[${solverId}] stdout read error:`, error)
+            }
+
+            const exitCode = await proc.exited
+            console.log(`[${solverId}] container exited with code ${exitCode}`)
+
+            const solver = this.solvers.get(solverId)
+            if (solver && solver.status !== "stopped") {
+                solver.status = exitCode === 0 ? "stopped" : "error"
+                if (exitCode !== 0) {
+                    solver.error = `Container exited with code ${exitCode}`
+                }
+            }
+            this.procs.delete(solverId)
+        })()
+
+        if (proc.stderr) {
+            const errReader = proc.stderr.getReader()
+            ;(async () => {
+                try {
+                    while (true) {
+                        const { done, value } = await errReader.read()
+                        if (done) break
+                        const text = decoder.decode(value, { stream: true })
+                        for (const line of text.split("\n")) {
+                            if (line.trim()) {
+                                console.error(`[${solverId}][stderr] ${line}`)
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error(`[${solverId}] stderr read error:`, error)
+                }
+            })()
+        }
     }
 }
