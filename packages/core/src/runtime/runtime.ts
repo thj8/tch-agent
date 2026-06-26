@@ -2,9 +2,11 @@ import type Dockerode from "dockerode"
 import { mkdir } from "node:fs/promises"
 import { dirname } from "node:path"
 import type { Subprocess } from "bun"
-import { ConfigManager } from "../config/index"
+import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent"
+import { ConfigManager, TCH_AGENT_HOME_DIR } from "../config/index"
 import type { ContainerConfig, SolverEventHandler, SolverInstance } from "./types"
 import { solverDir, solverSessionDir, solverWorkspaceDir } from "./types"
+import type { SolverInitPayload } from "../solver/rpc/rpc-types"
 import {
     DOCKERFILE_HASH_LABEL,
     getSolverDockerfileContent,
@@ -208,7 +210,7 @@ export class RuntimeManager {
     }
 
     /**
-     * 拉起一个 Solver 容器。
+     * 拉起一个 Solver 容器，并完成 init 握手。
      *
      * 流程：
      *   1. 生成 solverId
@@ -216,10 +218,9 @@ export class RuntimeManager {
      *   3. 决定 binary injection
      *   4. 拼 docker run 命令
      *   5. Bun.spawn 拉起容器，拿到 stdin/stdout pipe
-     *   6. 启动 readStream（监听容器 stdout）
-     *
-     * 注意：本课时**不做 init 握手**，下一课再补。
-     * 这里容器能跑起来 + 事件流能转发就 OK。
+     *   6. 启动 readStream（拿到 initReady Promise）
+     *   7. 写 SolverInitPayload 到容器 stdin
+     *   8. 等 init success（最多 30 秒）
      *
      * @param promptName 用哪个 prompt
      * @param task 初始 task 文本
@@ -259,6 +260,7 @@ export class RuntimeManager {
 
         const binds = [
             ...(this.config.binds ?? []),
+            `${TCH_AGENT_HOME_DIR}:/root/.tch-agent`,
             `${baseDir}:${containerRuntimeDir}`,
             `${workspaceDir}:${containerWorkspaceDir}`,
             ...injection.binds,
@@ -302,9 +304,33 @@ export class RuntimeManager {
         this.procs.set(id, proc)
         solver.status = "running"
 
-        this.readStream(id, proc)
+        const initReady = this.readStream(id, proc)
+
+        const initPayload: SolverInitPayload = {
+            solverId: id,
+            promptName,
+            task,
+            ...(solver.challengeId ? { challengeId: solver.challengeId } : {}),
+        }
+        proc.stdin.write(JSON.stringify(initPayload) + "\n")
+
+        await Promise.race([
+            initReady,
+            new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("solver init timeout (30s)")), 30_000),
+            ),
+        ])
 
         return solver
+    }
+
+    /**
+     * 给指定 solver 容器发 RPC 命令。
+     */
+    sendCommand(solverId: string, command: unknown): void {
+        const proc = this.procs.get(solverId)
+        if (!proc) throw new Error(`No process for solver ${solverId}`)
+        proc.stdin.write(JSON.stringify(command) + "\n")
     }
 
     /**
@@ -352,16 +378,25 @@ export class RuntimeManager {
     }
 
     /**
-     * 读容器的 stdout，把每行 print 出来。
-     *
-     * 本课时简化：不解析 JSON，直接 print（下一课时改成事件流）。
-     * 同时监听 stderr，便于排查容器启动失败。
+     * 读容器的 stdout，做两件事：
+     *   1. 等第一条 init 响应（initReady Promise）
+     *   2. 后续每行作为事件转发给 event handler
      */
     private readStream(
         solverId: string,
         proc: Subprocess<"pipe", "pipe", "pipe">,
-    ): void {
+    ): Promise<void> {
         const decoder = new TextDecoder()
+
+        let resolveInit!: () => void
+        let rejectInit!: (err: Error) => void
+        const initReady = new Promise<void>((res, rej) => {
+            resolveInit = res
+            rejectInit = rej
+        })
+
+        let initResolved = false
+
         ;(async () => {
             const reader = proc.stdout.getReader()
             let buffer = ""
@@ -376,13 +411,39 @@ export class RuntimeManager {
                         if (idx === -1) break
                         const line = buffer.slice(0, idx).trim()
                         buffer = buffer.slice(idx + 1)
-                        if (line) {
-                            console.log(`[${solverId}] ${line}`)
+                        if (!line) continue
+
+                        let event: unknown
+                        try {
+                            event = JSON.parse(line)
+                        } catch {
+                            console.warn(`[${solverId}] non-JSON stdout: ${line}`)
+                            continue
                         }
+
+                        if (!initResolved) {
+                            const response = event as {
+                                type?: string
+                                command?: string
+                                success?: boolean
+                                error?: string
+                            }
+                            if (response.type === "response" && response.command === "init") {
+                                initResolved = true
+                                if (response.success) {
+                                    resolveInit()
+                                } else {
+                                    rejectInit(new Error(response.error || "init failed"))
+                                }
+                                continue
+                            }
+                        }
+
+                        this.emit(solverId, event as AgentSessionEvent)
                     }
                 }
             } catch (error) {
-                console.error(`[${solverId}] stdout read error:`, error)
+                if (!initResolved) rejectInit(error as Error)
             }
 
             const exitCode = await proc.exited
@@ -417,5 +478,7 @@ export class RuntimeManager {
                 }
             })()
         }
+
+        return initReady
     }
 }

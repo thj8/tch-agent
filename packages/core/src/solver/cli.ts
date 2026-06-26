@@ -5,6 +5,8 @@ import type {
 } from "@mariozechner/pi-coding-agent"
 import { createSolverSession } from "./session"
 
+export { runSolverRpc } from "./rpc/rpc-server"
+
 export interface RunSolverOptions {
   promptName: string
   task: string

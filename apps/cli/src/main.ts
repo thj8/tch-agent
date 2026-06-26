@@ -26,6 +26,82 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+function summarizeEvent(event: unknown): string | null {
+  if (typeof event !== "object" || event === null) return null
+  const e = event as { type?: string; message?: { role?: string; content?: unknown }; toolName?: string; args?: unknown; result?: unknown; isError?: boolean; messages?: unknown }
+  switch (e.type) {
+    case "message_end": {
+      if (e.message?.role === "assistant") {
+        const text = extractText(e.message.content)
+        if (text) return `[assistant] ${text}`
+      }
+      return null
+    }
+    case "tool_execution_start":
+      return `[tool_call] ${e.toolName}(${summarizeArgs(e.args)})`
+    case "tool_execution_end": {
+      const preview = summarizeResult(e.result)
+      return `${e.isError ? "[tool_result(error)]" : "[tool_result]"} ${preview}`
+    }
+    case "agent_end":
+      return `[agent_end] stopReason=${extractStopReason(e.messages)}`
+    default:
+      return e.type ? `[${e.type}]` : null
+  }
+}
+
+function extractText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .filter(
+      (p): p is { type: "text"; text: string } =>
+        !!p && typeof p === "object" && (p as { type?: unknown }).type === "text",
+    )
+    .map((p) => p.text)
+    .join("")
+}
+
+function extractStopReason(messages: unknown): string {
+  if (!Array.isArray(messages)) return "unknown"
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string; stopReason?: string }
+    if (m?.role === "assistant" && typeof m.stopReason === "string") return m.stopReason
+  }
+  return "unknown"
+}
+
+function summarizeArgs(args: unknown): string {
+  try {
+    return (JSON.stringify(args) ?? "").slice(0, 120)
+  } catch {
+    return String(args)
+  }
+}
+
+function summarizeResult(result: unknown): string {
+  if (typeof result === "string") return result.slice(0, 500)
+  if (result && typeof result === "object" && "content" in result) {
+    const content = (result as { content?: unknown }).content
+    if (Array.isArray(content)) {
+      const text = content
+        .map((c) => {
+          if (typeof c === "object" && c && (c as { type?: string }).type === "text") {
+            return (c as { text?: string }).text ?? ""
+          }
+          return ""
+        })
+        .join("\n")
+      return text.slice(0, 500)
+    }
+  }
+  try {
+    return JSON.stringify(result).slice(0, 500)
+  } catch {
+    return String(result)
+  }
+}
+
 async function main() {
   const program = new Command()
     .name("tch-agent")
@@ -328,8 +404,10 @@ async function main() {
 
   // ── solver 命令 ─────────────────────────────────────────
 
-  program
-    .command("solver")
+  const solverCmd = program.command("solver").description("Solver entry points")
+
+  solverCmd
+    .command("run")
     .description("Run a solver locally (non-Docker) with the given prompt and task")
     .requiredOption("-p, --prompt <name>", "Prompt name")
     .argument("<task>", "Task description")
@@ -345,6 +423,19 @@ async function main() {
           "[fatal]",
           error instanceof Error ? error.message : String(error),
         )
+        process.exit(1)
+      }
+    })
+
+  solverCmd
+    .command("rpc")
+    .description("Start RPC server (reads JSONL from stdin) — runs inside container")
+    .action(async () => {
+      const { runSolverRpc } = await import("@my/core")
+      try {
+        await runSolverRpc()
+      } catch (error) {
+        console.error("[rpc] fatal:", error)
         process.exit(1)
       }
     })
@@ -407,6 +498,11 @@ async function main() {
       const runtime = new RuntimeManager(config)
 
       await runtime.init((msg) => console.log(msg))
+
+      runtime.onEvent((solverId, event) => {
+        const summary = summarizeEvent(event)
+        if (summary) console.log(`[${solverId}] ${summary}`)
+      })
 
       const solver = await runtime.launch(opts.prompt, task)
       console.log(`\n✓ Launched solver ${solver.id} (container: ${solver.containerId})`)

@@ -53,33 +53,34 @@ tch-agent runtime launch --prompt SOLVER "ls /tmp"
 
 **为什么不用 TCP / WebSocket / HTTP？**
 
-| 协议 | 复杂度 | 适用 |
-|---|---|---|
-| **stdin/stdout + JSONL** | 简单 | 父子进程通信 |
-| TCP socket | 中等 | 网络进程通信 |
-| WebSocket | 高 | 浏览器 / Web 通信 |
-| HTTP REST | 高 | 客户端 / 服务器 |
+| Protocol              | Complexity | Use case          |
+|-----------------------|------------|-------------------|
+| **stdin/stdout+JSONL**| simple     | parent-child IPC  |
+| TCP socket            | medium     | networked IPC     |
+| WebSocket             | high       | browser / web     |
+| HTTP REST             | high       | client / server   |
 
 我们的场景是"宿主 spawn 容器"，stdin/stdout 是天然的双向管道，**不需要额外开端口**。JSONL 让协议简单且结构化。
 
 ### 0.3 协议设计
 
 ```
-┌─ Host ───────────────────────────────┐    ┌─ Container ──────────────────┐
-│                                      │    │                              │
-│  1. 写 stdin：SolverInitPayload      │───▶│  读第一行 → createSolverSession│
-│                                      │    │                              │
-│                                      │◀───│  写 stdout：init success      │
-│                                      │    │                              │
-│  2. 写 stdin：RpcCommand (prompt)    │───▶│  session.prompt(message)      │
-│                                      │    │                              │
-│                                      │◀───│  写 stdout：AgentSessionEvent │
-│                                      │◀───│  写 stdout：AgentSessionEvent │
-│                                      │◀───│  ...（流式）                  │
-│                                      │    │                              │
-│  3. 写 stdin：RpcCommand (steer)     │───▶│  session.steer(...)           │
-│  ...                                 │    │  ...                          │
-└──────────────────────────────────────┘    └──────────────────────────────┘
+┌─ Host ──────────────────────────────┐    ┌─ Container ─────────────────┐
+│                                     │    │                             │
+│  1. stdin: SolverInitPayload        │───▶│  read first line →          │
+│                                     │    │  createSolverSession()      │
+│                                     │    │                             │
+│                                     │◀───│  stdout: init success       │
+│                                     │    │                             │
+│  2. stdin: RpcCommand (prompt)      │───▶│  session.prompt(message)    │
+│                                     │    │                             │
+│                                     │◀───│  stdout: AgentSessionEvent  │
+│                                     │◀───│  stdout: AgentSessionEvent  │
+│                                     │◀───│  ... (streaming)            │
+│                                     │    │                             │
+│  3. stdin: RpcCommand (steer)       │───▶│  session.steer(...)         │
+│  ...                                │    │  ...                        │
+└─────────────────────────────────────┘    └─────────────────────────────┘
 ```
 
 **消息类型**：
