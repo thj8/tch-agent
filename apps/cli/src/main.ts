@@ -349,6 +349,53 @@ async function main() {
       }
     })
 
+  // ── runtime 命令组 ──────────────────────────────────────
+
+  const runtimeCmd = program.command("runtime").description("Manage Docker runtime")
+
+  runtimeCmd
+    .command("ping")
+    .description("Check if Docker daemon is reachable")
+    .action(async () => {
+      const { ConfigManager, RuntimeManager } = await import("@my/core")
+      const config = await ConfigManager.getInstance()
+      const runtime = new RuntimeManager(config)
+      const ok = await runtime.ping()
+      if (ok) {
+        console.log("✓ Docker daemon connected")
+      } else {
+        console.error("✗ Docker daemon not reachable")
+        process.exit(1)
+      }
+    })
+
+  runtimeCmd
+    .command("build-image")
+    .description("Build the solver Docker image (incremental)")
+    .action(async () => {
+      const { ConfigManager, RuntimeManager } = await import("@my/core")
+      const config = await ConfigManager.getInstance()
+      const runtime = new RuntimeManager(config)
+      await runtime.init((msg) => console.log(msg))
+      console.log("✓ Done")
+    })
+
+  runtimeCmd
+    .command("has-image")
+    .description("Check if solver image exists locally")
+    .action(async () => {
+      const { ConfigManager, RuntimeManager } = await import("@my/core")
+      const config = await ConfigManager.getInstance()
+      const runtime = new RuntimeManager(config)
+      const exists = await runtime.hasImage()
+      if (exists) {
+        console.log(`✓ Image ${runtime.getConfig().image} exists`)
+      } else {
+        console.error(`✗ Image ${runtime.getConfig().image} not found`)
+        process.exit(1)
+      }
+    })
+
   await program.parseAsync(process.argv)
 }
 

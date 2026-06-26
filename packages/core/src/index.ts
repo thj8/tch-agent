@@ -8,6 +8,9 @@ export { runSolverCli } from "./solver/cli"
 export type { RunSolverOptions } from "./solver/cli"
 export { createSolverSession } from "./solver/session"
 export type { SolverSession } from "./solver/session"
+export { RuntimeManager } from "./runtime/runtime"
+export type { SolverInstance, ContainerConfig, SolverEventHandler } from "./runtime/types"
+export { SOLVERS_DIR, ARCHIVE_SOLVERS_DIR, solverDir, solverSessionDir, solverWorkspaceDir } from "./runtime/types"
 
 
 
