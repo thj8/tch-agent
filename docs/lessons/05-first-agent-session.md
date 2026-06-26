@@ -456,6 +456,37 @@ SessionManager.create(workspaceDir, sessionDir)
 - 进程重启后能恢复对话（虽然本课时不用）
 - 后续课时（observer）能读这些 JSONL 做行为分析
 
+#### `await session.bindExtensions({})` 到底干了什么
+
+SDK 文档里写"创建 session 后必须 bindExtensions"，但传一个空对象到底意义何在？
+
+**签名**（SDK 的 `AgentSession.bindExtensions`）：
+
+```typescript
+bindExtensions(bindings: ExtensionBindings): Promise<void>
+
+interface ExtensionBindings {
+    uiContext?: ExtensionUIContext                       // UI 回调（渲染、菜单等）
+    commandContextActions?: ExtensionCommandContextActions  // 自定义 /命令 的行为
+    shutdownHandler?: ShutdownHandler                    // 关闭回调
+    onError?: ExtensionErrorListener                     // 错误回调
+}
+```
+
+**内部行为**（SDK 源码 `agent-session.js`）：
+
+1. 把传入的 4 个回调存到 session 内部字段（传 `{}` 时全部跳过）
+2. 如果 `extensionRunner` 已存在：
+   - 把当前已存的回调同步给 runner
+   - 触发 `session_start` 事件给所有扩展
+   - 让扩展声明 skills / prompts / themes，并入 ResourceLoader，重建系统提示
+
+**为什么传 `{}` 也能跑**：扩展本身是在 `resolvePromptSession` 第 3 步通过 `DefaultResourceLoader.extensionFactories` 注入的，但 SDK 规定——扩展的 `session_start` 钩子和资源发现**只有在 `bindExtensions` 被调用时才会触发**。传 `{}` 等于："我没有 UI / shutdown / 命令回调，但仍然要走完扩展启动流程。"
+
+> 💡 **SDK 自己的示例也这么写**：`examples/sdk/13-session-runtime.ts` 就是 `await session.bindExtensions({})`——headless 场景的标准用法。
+
+将来要做交互式 UI 或自定义 `/命令`，再往里塞 `uiContext` / `commandContextActions`。后续课时（observer / 强制续跑）会用到。
+
 ---
 
 ## 第三步：实现 CLI 入口
@@ -641,6 +672,48 @@ program
 ```
 
 > 💡 **不要写 `program.command("solver list")`**：commander 会把它当成名为 `solver` 的命令注册，和上面那条冲突。要列出可用 prompt 用 `tch-agent config prompts list`（lesson 4 已有）。
+
+### 3.4 关键设计点
+
+#### `await session.prompt(task, { source: "interactive" })` 做了什么
+
+前面 `createSolverSession` 只是装配好 session，到这一行才**真正把任务发给 LLM 并驱动一整轮 agent 循环**。
+
+**签名**（SDK 的 `AgentSession.prompt`）：
+
+```typescript
+prompt(text: string, options?: PromptOptions): Promise<void>
+
+interface PromptOptions {
+    expandPromptTemplates?: boolean             // 默认 true，展开文件式 prompt 模板
+    images?: ImageContent[]                     // 附图
+    streamingBehavior?: "steer" | "followUp"    // 流式时必填
+    source?: InputSource                        // 默认 "interactive"
+}
+
+type InputSource = "interactive" | "rpc" | "extension"
+```
+
+**这一行做了 4 件事**（按 SDK 文档）：
+
+1. 若文本是扩展命令（`pi.registerCommand` 注册的），立刻执行，不入 LLM
+2. 默认展开 `/skill:xxx` 和文件式 prompt 模板
+3. 校验 model / API key，发请求
+4. **阻塞 Promise 直到整轮 agent 完成**——包括所有 LLM 调用 + 工具执行 + 最后的 `stopReason`
+
+期间 session 持续发事件，前面 `session.subscribe(handler)` 那条订阅把事件流写进 stdout。`prompt` resolve 之后才会执行 `[done]` 和 `dispose`。
+
+**`source: "interactive"` 是什么**：是给扩展的标签——触发 `input` 事件时附在 `InputEvent.source` 上，让监听的扩展能区分输入来自哪里：
+
+| 值 | 含义 |
+|---|---|
+| `"interactive"` | 用户在交互终端里敲的（默认） |
+| `"rpc"` | 通过 RPC 通道（外部程序调用）来的 |
+| `"extension"` | 另一个扩展内部生成的 |
+
+Solver 跑在 headless CLI 里，没人真的在敲终端，严格说更接近 `rpc` 语义。但 SDK 默认就是 `interactive`，这里显式写出来可读性更好；后续课时（课时 8 RPC 握手）会把这里改成 `"rpc"`。
+
+> 💡 **`await` 会一直阻塞**：包括所有工具调用。期间事件回调在并发地往 stdout 打日志——这就是为什么上面 `subscribe` 必须先于 `prompt` 调用，否则会漏掉开局事件。
 
 ---
 
