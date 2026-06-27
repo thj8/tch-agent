@@ -21,7 +21,7 @@ export interface SolverSession {
  * 创建一个 Solver AgentSession。
  *
  * 流程：
- *   1. 准备 workspace / session 目录（默认在 ~/.tch-agent/solvers/<id>/）
+ *   1. 准备 workspace / session 目录（默认在 ~/.tinyfat/solvers/<id>/）
  *   2. resolvePromptSession 装配 SDK 选项
  *   3. createAgentSession + bindExtensions
  *
@@ -36,7 +36,7 @@ export async function createSolverSession(init: {
     const config = await ConfigManager.getInstance()
 
     // 1. 准备目录
-    const homeDir = resolve(homedir(), ".tch-agent")
+    const homeDir = resolve(homedir(), ".tinyfat")
     const solversDir = resolve(homeDir, "solvers")
     const workspaceDir = resolve(solversDir, init.solverId, "workspace")
     const sessionDir = resolve(solversDir, init.solverId, "session")

@@ -42,6 +42,8 @@ export type RpcCommand =
     // Session
     | { id?: string; type: "get_messages" }
     | { id?: string; type: "get_session_stats" }
+    // Host bridge：宿主 → 容器，把 bridge 请求的结果推回去
+    | { id?: string; type: "host_bridge_response"; request_id: string; success: boolean; data?: unknown; error?: string }
 
 /**
  * 容器 → 宿主的命令应答。

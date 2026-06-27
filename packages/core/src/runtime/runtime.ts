@@ -8,6 +8,13 @@ import type { ContainerConfig, SolverEventHandler, SolverInstance } from "./type
 import { solverDir, solverSessionDir, solverWorkspaceDir } from "./types"
 import type { SolverInitPayload } from "../solver/rpc/rpc-types"
 import {
+    createBuiltinHostBridgeHandler,
+    type HostBridgeHandleContext,
+    type HostBridgeHandleResult,
+    type HostBridgeHandler,
+} from "../challenge/host-bridge-handler"
+import type { HostBridgeRequestEvent } from "../challenge/host-bridge-types"
+import {
     DOCKERFILE_HASH_LABEL,
     getSolverDockerfileContent,
     hashDockerfileContent,
@@ -40,16 +47,27 @@ export class RuntimeManager {
     private procs = new Map<string, Subprocess<"pipe", "pipe", "pipe">>()
     /** solverId → SolverInstance 元数据 */
     private solvers = new Map<string, SolverInstance>()
+    private hostBridgeHandlers: HostBridgeHandler[]
+    private solverEnvs = new Map<string, Record<string, string>>()
 
     /**
      * @param config ConfigManager（用于读 host settings）
+     * @param hostBridgeHandlers 额外的 host bridge handler（自动加 builtin 在前）
      */
-    constructor(config: ConfigManager) {
+    constructor(config: ConfigManager, hostBridgeHandlers: HostBridgeHandler[] = []) {
         this.hostConfig = config
         this.config = {
-            image: "tch-agent:latest",
+            image: "tinyfat-agent:latest",
             binds: [],
         }
+
+        this.hostBridgeHandlers = [
+            createBuiltinHostBridgeHandler({
+                getSolverEnvValue: (solverId, key) => this.solverEnvs.get(solverId)?.[key],
+                hasApiKey: (provider) => this.hostConfig.hasApiKey(provider),
+            }),
+            ...hostBridgeHandlers,
+        ]
     }
 
     /** 懒加载 dockerode 单例 */
@@ -135,7 +153,7 @@ export class RuntimeManager {
             onProgress?.(`Image ${this.config.image} not found, building...`)
         }
 
-        // 同步 Dockerfile 到 ~/.tch-agent/runtime/
+        // 同步 Dockerfile 到 ~/.tinyfat/runtime/
         const dockerfilePath = await resolveDockerfilePath(onProgress)
 
         // docker build
@@ -245,6 +263,7 @@ export class RuntimeManager {
             createdAt: Date.now(),
         }
         this.solvers.set(id, solver)
+        this.solverEnvs.set(id, solverEnv)
 
         const baseDir = solverDir(id)
         const sessionDir = solverSessionDir(id)
@@ -260,7 +279,7 @@ export class RuntimeManager {
 
         const binds = [
             ...(this.config.binds ?? []),
-            `${TCH_AGENT_HOME_DIR}:/root/.tch-agent`,
+            `${TCH_AGENT_HOME_DIR}:/root/.tinyfat`,
             `${baseDir}:${containerRuntimeDir}`,
             `${workspaceDir}:${containerWorkspaceDir}`,
             ...injection.binds,
@@ -331,6 +350,40 @@ export class RuntimeManager {
         const proc = this.procs.get(solverId)
         if (!proc) throw new Error(`No process for solver ${solverId}`)
         proc.stdin.write(JSON.stringify(command) + "\n")
+    }
+
+    /**
+     * 处理一个 host bridge 请求：按 handler 链试，把结果推回容器。
+     */
+    private async handleHostBridgeRequest(
+        solverId: string,
+        request: HostBridgeRequestEvent,
+    ): Promise<void> {
+        const ctx: HostBridgeHandleContext = {
+            solverId,
+            action: request.action,
+            params: request.params,
+            getSolverEnvValue: (key) => this.solverEnvs.get(solverId)?.[key],
+            hasApiKey: (provider) => this.hostConfig.hasApiKey(provider),
+        }
+
+        let result: HostBridgeHandleResult = { handled: false }
+        for (const handler of this.hostBridgeHandlers) {
+            try {
+                result = await handler.handle(ctx)
+                if (result.handled) break
+            } catch (error) {
+                console.error(`[host-bridge] handler error for ${request.action}:`, error)
+            }
+        }
+
+        this.sendCommand(solverId, {
+            type: "host_bridge_response",
+            request_id: request.request_id,
+            success: result.handled,
+            ...(result.handled && result.data !== undefined ? { data: result.data } : {}),
+            ...(!result.handled ? { error: `unhandled action: ${request.action}` } : {}),
+        })
     }
 
     /**
@@ -437,6 +490,12 @@ export class RuntimeManager {
                                 }
                                 continue
                             }
+                        }
+
+                        const maybeBridgeReq = event as { type?: string }
+                        if (maybeBridgeReq.type === "host_bridge_request") {
+                            void this.handleHostBridgeRequest(solverId, event as HostBridgeRequestEvent)
+                            continue
                         }
 
                         this.emit(solverId, event as AgentSessionEvent)

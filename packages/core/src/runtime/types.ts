@@ -3,12 +3,12 @@ import { TCH_AGENT_HOME_DIR } from "../config/index"
 import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent"
 
 /**
- * 所有 solver 的根目录：~/.tch-agent/solvers/
+ * 所有 solver 的根目录：~/.tinyfat/solvers/
  * 每个 solver 一个子目录，按 solverId 命名。
  */
 export const SOLVERS_DIR = resolve(TCH_AGENT_HOME_DIR, "solvers")
 
-/** 已归档（停止）的 solver：~/.tch-agent/archive_solvers/ */
+/** 已归档（停止）的 solver：~/.tinyfat/archive_solvers/ */
 export const ARCHIVE_SOLVERS_DIR = resolve(TCH_AGENT_HOME_DIR, "archive_solvers")
 
 /**
@@ -59,7 +59,7 @@ export type SolverEventHandler = (solverId: string, event: AgentSessionEvent) =>
 
 // ── 路径计算辅助 ──────────────────────────────────────
 
-/** solver 根目录：~/.tch-agent/solvers/<solverId> */
+/** solver 根目录：~/.tinyfat/solvers/<solverId> */
 export function solverDir(solverId: string): string {
     return resolve(SOLVERS_DIR, solverId)
 }

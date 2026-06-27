@@ -444,7 +444,7 @@ export class RuntimeManager {
     constructor(config: ConfigManager, hostBridgeHandlers: HostBridgeHandler[] = []) {
         this.docker = new Dockerode()
         this.hostConfig = config
-        this.config = { image: "tch-agent:latest", binds: [] }
+        this.config = { image: "tinyfat:latest", binds: [] }
 
         // 自动加内置 handler
         this.hostBridgeHandlers = [
@@ -559,8 +559,8 @@ mkdir -p packages/core/src/config/tools
 
 ```typescript
 import { defineTool } from "@mariozechner/pi-coding-agent"
-import { Type } from "@sinclair/typebox"
-import { requestHostBridge } from "../../../challenge/host-bridge-client"
+import { Type } from "typebox"
+import { requestHostBridge } from "../../challenge/host-bridge-client"
 
 /** Ping 工具：测试 host bridge 连通性 */
 export const pingHostTool = defineTool({
@@ -572,6 +572,7 @@ export const pingHostTool = defineTool({
         const result = await requestHostBridge<{ pong: boolean; time: number }>("ping", {})
         return {
             content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            details: undefined,
         }
     },
 })
@@ -590,6 +591,7 @@ export const getEnvTool = defineTool({
             content: [
                 { type: "text", text: `${params.key}=${result.value ?? "(unset)"}` },
             ],
+            details: undefined,
         }
     },
 })
@@ -610,6 +612,7 @@ export const hasApiKeyTool = defineTool({
             content: [
                 { type: "text", text: `${params.provider}: ${result.exists ? "configured" : "not configured"}` },
             ],
+            details: undefined,
         }
     },
 })
@@ -617,6 +620,24 @@ export const hasApiKeyTool = defineTool({
 /** 所有 host bridge 工具 */
 export const hostBridgeTools = [pingHostTool, getEnvTool, hasApiKeyTool]
 ```
+
+> **⚠️ 注意事项**
+>
+> 1. **typebox 不是 @sinclair/typebox**：pi-coding-agent 内部用的是 `typebox` 包（不带命名空间），SDK 自带的 d.ts 也从 `typebox` 导入。直接 `import { Type } from "typebox"`。
+>
+> 2. **typebox 需要在根 package.json 显式声明**：虽然它是 pi-coding-agent 的传递依赖，但 TS 不会从 `.bun/node_modules/` 自动提升。在根 `package.json` 的 `dependencies` 里加 `"typebox": "^1.3.0"`，然后 `bun install`。
+>
+> 3. **execute 返回值必须有 `details` 字段**：`AgentToolResult<T>` 的类型定义里 `details: T` 是必填的（不是可选），T 默认 `unknown`。最简单的方式是直接 `details: undefined`，TS 也接受。漏掉会报：
+>
+>    ```text
+>    error TS2322: Type '... ' is not assignable to type 'Promise<AgentToolResult<unknown>>'.
+>      Property 'details' is missing in type '...'
+>    ```
+>
+> 4. **import 路径要数清楚 `../`**：从 `packages/core/src/config/tools/host-bridge-tools.ts` 到 `packages/core/src/challenge/host-bridge-client.ts`：
+>    - `tools/` → `config/`（一个 `..`）
+>    - `config/` → `src/`（两个 `..`）
+>    - `src/` + `challenge/host-bridge-client` = `../../challenge/host-bridge-client`
 
 ### 6.2 在 ConfigManager 注册这些工具
 
@@ -639,7 +660,7 @@ const opts: CreateAgentSessionOptions = {
 
 ### 6.3 让 SOLVER prompt 启用这些工具
 
-编辑 `~/.tch-agent/config/prompts/SOLVER.md`，在 tools 里加这三个：
+编辑 `~/.tinyfat/config/prompts/SOLVER.md`，在 tools 里加这三个：
 
 ```markdown
 ---

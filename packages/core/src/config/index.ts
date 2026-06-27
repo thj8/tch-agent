@@ -15,11 +15,12 @@ import { join, resolve } from "node:path"
 import * as prompts from "./prompts/index"
 import type { ModelConfigEntry, ProviderPrefEntry } from "./providers/types"
 import type { AddResult } from "./types"
+import { hostBridgeTools } from "./tools/host-bridge-tools"
 
-// 用户主目录下的配置根目录：~/.tch-agent/
-export const TCH_AGENT_HOME_DIR = resolve(homedir(), ".tch-agent")
+// 用户主目录下的配置根目录：~/.tinyfat/
+export const TCH_AGENT_HOME_DIR = resolve(homedir(), ".tinyfat")
 
-// 配置目录：~/.tch-agent/config/
+// 配置目录：~/.tinyfat/config/
 export const DEFAULT_CONFIG_DIR = resolve(TCH_AGENT_HOME_DIR, "config")
 
 
@@ -497,6 +498,7 @@ You are a helpful agent that solves tasks step by step.
     const opts: CreateAgentSessionOptions = {
       cwd,
       tools: prompt.meta.tools ?? [],
+      customTools: [...hostBridgeTools],
       resourceLoader,
       authStorage: this.auth,
       modelRegistry: this.models,

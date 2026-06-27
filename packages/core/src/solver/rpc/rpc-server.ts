@@ -13,6 +13,7 @@
 
 import type { AgentSession, AgentSessionEvent } from "@mariozechner/pi-coding-agent"
 import { createSolverSession } from "../session"
+import { resolveHostBridgeResponse } from "../../challenge/host-bridge-client"
 import type { RpcCommand, RpcResponse, SolverInitPayload } from "./rpc-types"
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl"
 
@@ -159,6 +160,11 @@ async function handleCommand(session: AgentSession, cmd: RpcCommand): Promise<Rp
 
         case "get_messages": {
             return success(id, "get_messages", { messages: session.messages })
+        }
+
+        case "host_bridge_response": {
+            resolveHostBridgeResponse(cmd.request_id, cmd.success, cmd.data, cmd.error)
+            return success(id, "host_bridge_response")
         }
 
         case "set_model": {
