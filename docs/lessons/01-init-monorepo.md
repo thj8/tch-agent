@@ -23,14 +23,14 @@
 跑 `bun run apps/cli/src/main.ts` 能输出：
 
 ```
-hello tch-agent
+hello tinyfat
 loaded package: @my/core
 ```
 
 项目结构如下：
 
 ```
-my-tch-agent/
+tinyfat/
 ├── package.json              # 根 package.json（workspaces 配置）
 ├── tsconfig.json             # TypeScript 配置
 ├── CLAUDE.md                 # 代码风格约定（Claude Code 自动读）
@@ -222,13 +222,13 @@ pwd   # 应该输出 /Users/你的用户名/projects
 ## 第二步：创建项目目录
 
 ```bash
-mkdir my-tch-agent
-cd my-tch-agent
-pwd   # 确认你在 /Users/.../my-tch-agent
+mkdir tinyfat
+cd tinyfat
+pwd   # 确认你在 /Users/.../tinyfat
 ```
 
 > 💡 **提示**：
-> - 项目名可以自己取，但后续课程里我会假设你在 `my-tch-agent/` 目录下操作。
+> - 项目名可以自己取，但后续课程里我会假设你在 `tinyfat/` 目录下操作。
 > - 名字建议小写、不含空格、不含中文。
 
 ---
@@ -247,7 +247,7 @@ bun init -y
 
 ```json
 {
-  "name": "my-tch-agent",
+  "name": "tinyfat",
   "version": "0.0.1",
   "module": "index.ts",
   "type": "module",
@@ -271,7 +271,7 @@ bun init -y
 
 ```json
 {
-  "name": "my-tch-agent",
+  "name": "tinyfat",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -298,7 +298,7 @@ bun init -y
 
 | 字段 | 含义 |
 |---|---|
-| `"name": "my-tch-agent"` | 项目名 |
+| `"name": "tinyfat"` | 项目名 |
 | `"version": "0.0.1"` | 版本号（语义化版本：主.次.修） |
 | `"private": true` | **私有项目**，禁止 `npm publish` 发布到 npm |
 | `"type": "module"` | **告诉 Bun/Node 这个项目用 ESM**（不用 CommonJS） |
@@ -384,7 +384,7 @@ dist/
 *.tsbuildinfo
 
 # 运行时数据（用户配置）
-.tch-agent/
+.tinyfat/
 
 # IDE
 .vscode/
@@ -406,7 +406,7 @@ dist/
 
 - `node_modules/`：依赖，不进 git（每个人 bun install 自己装）。
 - `bin/` / `dist/`：构建产物，不进 git。
-- `.tch-agent/`：后面课时会在项目根目录建一个临时数据目录，不进 git（真实数据在 `~/.tch-agent/`）。
+- `.tinyfat/`：后面课时会在项目根目录建一个临时数据目录，不进 git（真实数据在 `~/.tinyfat/`）。
 - `.DS_Store`：macOS 文件系统垃圾文件。
 
 ---
@@ -416,7 +416,7 @@ dist/
 新建 `CLAUDE.md`：
 
 ```markdown
-# my-tch-agent
+# tinyfat
 
 CTF / 渗透测试多 Agent 协作平台。
 
@@ -583,7 +583,7 @@ mkdir -p apps/cli/src
 ```typescript
 import { PACKAGE_NAME, add } from "@my/core"
 
-console.log("hello tch-agent")
+console.log("hello tinyfat")
 console.log(`loaded package: ${PACKAGE_NAME}`)
 console.log(`add(1, 2) = ${add(1, 2)}`)
 ```
@@ -645,7 +645,7 @@ core -> ../../../../packages/core
 Bun（以及 pnpm）用的是 **isolated node_modules 布局**：每个 workspace 包的依赖被放进消费者自己的 `node_modules`，不放根目录。
 
 ```
-my-tch-agent/
+tinyfat/
 ├── node_modules/           ← 根（只放真正的 npm 依赖，如 commander）
 └── apps/
     └── cli/
@@ -675,7 +675,7 @@ bun run apps/cli/src/main.ts
 **预期输出**：
 
 ```
-hello tch-agent
+hello tinyfat
 loaded package: @my/core
 add(1, 2) = 3
 ```
@@ -721,7 +721,7 @@ git init
 **预期**：
 
 ```
-Initialized empty Git repository in /Users/.../my-tch-agent/.git/
+Initialized empty Git repository in /Users/.../tinyfat/.git/
 ```
 
 ### 11.2 检查 git 看到哪些文件
@@ -783,9 +783,9 @@ git commit -m "init: bun monorepo scaffold"
    ↓
 6. Bun 读 packages/core/src/index.ts，找到 export const PACKAGE_NAME 和 export function add
    ↓
-7. Bun 回到 apps/cli/src/main.ts，执行 console.log("hello tch-agent")
+7. Bun 回到 apps/cli/src/main.ts，执行 console.log("hello tinyfat")
    ↓
-8. 输出 hello tch-agent
+8. 输出 hello tinyfat
    ↓
 9. 后续两行同理
 ```
@@ -1027,7 +1027,7 @@ bun upgrade
 📦 **新增文件**：
 
 ```
-my-tch-agent/
+tinyfat/
 ├── .gitignore
 ├── CLAUDE.md
 ├── package.json
@@ -1066,7 +1066,7 @@ my-tch-agent/
 
 [课时 2：ConfigManager 骨架 + 目录布局](./02-config-manager.md) —— 我们会：
 
-- 定义 `~/.tch-agent/` 目录结构
+- 定义 `~/.tinyfat/` 目录结构
 - 实现单例模式的 ConfigManager
 - 用 SDK 的 AuthStorage / ModelRegistry / SettingsManager
 - 跑一个脚本验证目录被创建

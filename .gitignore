@@ -6,7 +6,7 @@ dist/
 *.tsbuildinfo
 
 # 运行时数据（用户配置）
-.tch-agent/
+.tinyfat/
 
 # IDE
 .vscode/

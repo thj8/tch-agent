@@ -599,10 +599,10 @@ LLM 调 `memory_add({ kind: "fact", content: "...", source: "solver" })`。
 ### 5.3 看落盘
 
 ```bash
-ls ~/.tch-agent/solvers/<id>/session/.observer/memory/entries/
+ls ~/.tinyfat/solvers/<id>/session/.observer/memory/entries/
 # 看到一条 mem_xxx.json
 
-cat ~/.tch-agent/solvers/<id>/session/.observer/memory/entries/*.json
+cat ~/.tinyfat/solvers/<id>/session/.observer/memory/entries/*.json
 ```
 
 ### 5.4 类型检查

@@ -1,6 +1,6 @@
 # 课时 2：ConfigManager 骨架 + 目录布局
 
-> 🎯 **目标**：搭出 ConfigManager 单例 + 定义 `~/.tch-agent/` 目录布局，跑通初始化逻辑。
+> 🎯 **目标**：搭出 ConfigManager 单例 + 定义 `~/.tinyfat/` 目录布局，跑通初始化逻辑。
 >
 > ⏰ **预计耗时**：1-2 小时
 >
@@ -24,7 +24,7 @@
 
 跑 `bun run start init` 会：
 
-1. 自动创建 `~/.tch-agent/config/` 目录及子目录（prompts/、skills/）
+1. 自动创建 `~/.tinyfat/config/` 目录及子目录（prompts/、skills/）
 2. 实例化 SDK 的 AuthStorage / ModelRegistry / SettingsManager
 3. 打印出所有路径供你确认
 
@@ -46,7 +46,7 @@
 // ❌ 反面教材：到处自己读盘
 class ChallengeManager {
     async getChallenge(id) {
-        const data = await Bun.file(`~/.tch-agent/challenges/${id}.json`).json()
+        const data = await Bun.file(`~/.tinyfat/challenges/${id}.json`).json()
         // 但 API Key 怎么读？路径在哪？
     }
 }
@@ -71,7 +71,7 @@ class ChallengeManager {
 1. **持有所有 SDK 对象**（AuthStorage / ModelRegistry / SettingsManager）
 2. **提供配置 CRUD**（API Key / Provider / Model / Prompt / Skill）
 3. **解析 prompt → AgentSessionOptions**（后续课时）
-4. **管理目录布局**（确保 ~/.tch-agent/ 存在）
+4. **管理目录布局**（确保 ~/.tinyfat/ 存在）
 
 ### 0.2 为什么要单例？
 
@@ -184,8 +184,8 @@ const config = await ConfigManager.getInstance()
 
 不同操作系统的路径分隔符不同：
 
-- macOS / Linux：`/Users/xxx/.tch-agent/config/auth.json`
-- Windows：`C:\Users\xxx\.tch-agent\config\auth.json`
+- macOS / Linux：`/Users/xxx/.tinyfat/config/auth.json`
+- Windows：`C:\Users\xxx\.tinyfat\config\auth.json`
 
 **永远不要硬编码路径分隔符**，用 Node 的 `path` 模块：
 
@@ -193,12 +193,12 @@ const config = await ConfigManager.getInstance()
 import { resolve, join } from "node:path"
 
 // ✅ 正确：自动用当前系统的分隔符
-const authFile = resolve(homeDir, ".tch-agent", "config", "auth.json")
-// macOS:  /Users/xxx/.tch-agent/config/auth.json
-// Windows: C:\Users\xxx\.tch-agent\config\auth.json
+const authFile = resolve(homeDir, ".tinyfat", "config", "auth.json")
+// macOS:  /Users/xxx/.tinyfat/config/auth.json
+// Windows: C:\Users\xxx\.tinyfat\config\auth.json
 
 // ❌ 错误：硬编码 /
-const authFile = `${homeDir}/.tch-agent/config/auth.json`  // Windows 上可能出问题
+const authFile = `${homeDir}/.tinyfat/config/auth.json`  // Windows 上可能出问题
 ```
 
 用户主目录用 `node:os` 的 `homedir()`：
@@ -279,7 +279,7 @@ mkdir -p packages/core/src/config
  * config 层的跨模块共享类型。
  *
  * 本项目所有"宿主级"配置（runtime / challenge / planner 三块）
- * 都存在 ~/.tch-agent/config/host-settings.json。
+ * 都存在 ~/.tinyfat/config/host-settings.json。
  *
  * "宿主级" vs "用户偏好"：
  *   - 宿主级：跑这个进程的环境级配置（镜像名、网络、平台 API 地址等）。
@@ -297,7 +297,7 @@ export interface AddResult {
  * 后续课时会用这个配置拉起 Docker 容器。
  */
 export interface HostRuntimeSettings {
-    /** Docker 镜像名（默认 tch-agent:latest） */
+    /** Docker 镜像名（默认 tinyfat:latest） */
     image?: string
     /** 全局 env（所有 solver 容器都会注入） */
     env?: Record<string, string>
@@ -344,10 +344,10 @@ import { mkdir } from "node:fs/promises"
 import { AuthStorage, ModelRegistry, SettingsManager } from "@mariozechner/pi-coding-agent"
 
 /**
- * 用户主目录下的配置根目录：~/.tch-agent/
+ * 用户主目录下的配置根目录：~/.tinyfat/
  *
  * 所有用户配置都放在这里（与项目代码分离）：
- *   ~/.tch-agent/
+ *   ~/.tinyfat/
  *     └── config/
  *       ├── auth.json              ← AuthStorage 落盘
  *       ├── models.json            ← ModelRegistry 落盘
@@ -358,10 +358,10 @@ import { AuthStorage, ModelRegistry, SettingsManager } from "@mariozechner/pi-co
  *       ├── provider-prefs.json    ← Provider 偏好（课时 3）
  *       └── model-prefs.json       ← Model 偏好（课时 3）
  */
-export const TCH_AGENT_HOME_DIR = resolve(homedir(), ".tch-agent")
+export const TCH_AGENT_HOME_DIR = resolve(homedir(), ".tinyfat")
 
 /**
- * 配置目录：~/.tch-agent/config/
+ * 配置目录：~/.tinyfat/config/
  */
 export const DEFAULT_CONFIG_DIR = resolve(TCH_AGENT_HOME_DIR, "config")
 
@@ -374,7 +374,7 @@ export const DEFAULT_CONFIG_DIR = resolve(TCH_AGENT_HOME_DIR, "config")
  *   1. 持有 SDK 三件套（auth / models / settings）
  *   2. 提供配置 CRUD（后续课时追加）
  *   3. 解析 prompt → AgentSessionOptions（课时 5）
- *   4. 管理目录布局（确保 ~/.tch-agent/ 存在）
+ *   4. 管理目录布局（确保 ~/.tinyfat/ 存在）
  */
 export class ConfigManager {
     /** 配置根目录（绝对路径） */
@@ -419,7 +419,7 @@ export class ConfigManager {
      *
      * 失败时会清掉单例，让下次调用可以重试。
      *
-     * @param configDir 可选的自定义配置目录，默认 ~/.tch-agent/config/
+     * @param configDir 可选的自定义配置目录，默认 ~/.tinyfat/config/
      */
     static async getInstance(configDir: string = DEFAULT_CONFIG_DIR): Promise<ConfigManager> {
         const dir = resolve(configDir)
@@ -626,19 +626,19 @@ async function pathExists(path: string): Promise<boolean> {
 
 async function main() {
     const program = new Command()
-        .name("tch-agent")
+        .name("tinyfat")
         .description("CTF / pentest multi-agent platform")
         .version("0.0.1")
 
     /**
-     * 子命令：tch-agent init
+     * 子命令：tinyfat init
      * 初始化 ConfigManager，确认目录被创建。
      */
     program
         .command("init")
         .description("Initialize config directories and show paths")
         .action(async () => {
-            console.log("Initialize tch-agent...\n")
+            console.log("Initialize tinyfat...\n")
 
             // 这一行触发 ConfigManager 单例创建 + initialize()
             const config = await ConfigManager.getInstance()
@@ -671,7 +671,7 @@ async function main() {
         })
 
     /**
-     * 子命令：tch-agent paths
+     * 子命令：tinyfat paths
      * 打印所有路径，不创建任何东西（用于调试）。
      */
     program
@@ -696,7 +696,7 @@ main()
 
 > 💡 **`#!/usr/bin/env bun` shebang**
 >
-> 第一行的 [shebang](https://zh.wikipedia.org/wiki/Shebang) 告诉系统"这个文件用 bun 执行"。装了 `bin` 链接（`chmod +x apps/cli/src/main.ts && ln -s .../main.ts /usr/local/bin/tch-agent`）之后，就能直接 `tch-agent init` 而不用每次写 `bun run apps/cli/src/main.ts init`。课时 1 的 `apps/cli/package.json` 里 `"bin": "src/main.ts"` 就是配合 shebang 用的。
+> 第一行的 [shebang](https://zh.wikipedia.org/wiki/Shebang) 告诉系统"这个文件用 bun 执行"。装了 `bin` 链接（`chmod +x apps/cli/src/main.ts && ln -s .../main.ts /usr/local/bin/tinyfat`）之后，就能直接 `tinyfat init` 而不用每次写 `bun run apps/cli/src/main.ts init`。课时 1 的 `apps/cli/package.json` 里 `"bin": "src/main.ts"` 就是配合 shebang 用的。
 
 ### 4.3 代码解读
 
@@ -704,7 +704,7 @@ main()
 
 ```typescript
 const program = new Command()
-    .name("tch-agent")           // CLI 名字
+    .name("tinyfat")           // CLI 名字
     .description("...")          // 描述（--help 时显示）
     .version("0.0.1")            // 版本（--version 时显示）
 
@@ -764,13 +764,13 @@ async function pathExists(path: string): Promise<boolean> {
 
 ## 第五步：验证
 
-### 5.1 先看一下当前 `~/.tch-agent/` 是否存在
+### 5.1 先看一下当前 `~/.tinyfat/` 是否存在
 
 ```bash
-ls -la ~/.tch-agent 2>/dev/null || echo "(目录不存在)"
+ls -la ~/.tinyfat 2>/dev/null || echo "(目录不存在)"
 ```
 
-**预期**：`(目录不存在)`（如果你从来没跑过 tch-agent）
+**预期**：`(目录不存在)`（如果你从来没跑过 tinyfat）
 
 ### 5.2 跑 init
 
@@ -781,15 +781,15 @@ bun run apps/cli/src/main.ts init
 **预期输出**：
 
 ```
-Initialize tch-agent...
+Initialize tinyfat...
 
 ✓ Config directories created:
- TCH_AGENT_HOME: /Users/<你的用户名>/.tch-agent
- CONFIG_DIR: /Users/<你的用户名>/.tch-agent/config
- AUTH_FILE: /Users/<你的用户名>/.tch-agent/config/auth.json
- MODELS_FILE: /Users/<你的用户名>/.tch-agent/config/models.json
- PROMPTS_DIR: /Users/<你的用户名>/.tch-agent/config/prompts
- SKILLS_DIR: /Users/<你的用户名>/.tch-agent/config/skills
+ TCH_AGENT_HOME: /Users/<你的用户名>/.tinyfat
+ CONFIG_DIR: /Users/<你的用户名>/.tinyfat/config
+ AUTH_FILE: /Users/<你的用户名>/.tinyfat/config/auth.json
+ MODELS_FILE: /Users/<你的用户名>/.tinyfat/config/models.json
+ PROMPTS_DIR: /Users/<你的用户名>/.tinyfat/config/prompts
+ SKILLS_DIR: /Users/<你的用户名>/.tinyfat/config/skills
 
 ✓ SDK objects initialized:
  AuthStorage: AuthStorage
@@ -802,7 +802,7 @@ Initialize tch-agent...
 ### 5.3 确认目录真的被创建了
 
 ```bash
-ls -la ~/.tch-agent/
+ls -la ~/.tinyfat/
 ```
 
 **预期输出**：
@@ -814,7 +814,7 @@ drwxr-xr-x   5 yourname  staff  160 ... config
 ```
 
 ```bash
-ls -la ~/.tch-agent/config/
+ls -la ~/.tinyfat/config/
 ```
 
 **预期输出**：
@@ -837,8 +837,8 @@ bun run apps/cli/src/main.ts paths
 **预期输出**：
 
 ```
-TCH_AGENT_HOME_DIR = /Users/<你的用户名>/.tch-agent
-DEFAULT_CONFIG_DIR = /Users/<你的用户名>/.tch-agent/config
+TCH_AGENT_HOME_DIR = /Users/<你的用户名>/.tinyfat
+DEFAULT_CONFIG_DIR = /Users/<你的用户名>/.tinyfat/config
 ```
 
 ### 5.5 再跑一次 init（验证单例）
@@ -866,7 +866,7 @@ bun run apps/cli/src/main.ts --help
 **预期输出**：
 
 ```
-Usage: tch-agent [options] [command]
+Usage: tinyfat [options] [command]
 
 CTF / pentest multi-agent platform
 
@@ -922,7 +922,7 @@ bun remove @mariozechner/pi-coding-agent @mariozechner/pi-ai
 bun add @mariozechner/pi-coding-agent @mariozechner/pi-ai
 ```
 
-### 问题 3：`EACCES: permission denied, mkdir '/Users/xxx/.tch-agent'`
+### 问题 3：`EACCES: permission denied, mkdir '/Users/xxx/.tinyfat'`
 
 **原因**：用户目录权限问题（少见，一般是用了奇怪的 sudo）。
 
@@ -933,7 +933,7 @@ bun add @mariozechner/pi-coding-agent @mariozechner/pi-ai
 ls -la ~ | head -3
 
 # 如果有问题，修复（不会影响其他文件）
-sudo chown -R $(whoami) ~/.tch-agent
+sudo chown -R $(whoami) ~/.tinyfat
 ```
 
 ### 问题 4：单例没生效，每次调用都创建新实例
@@ -979,7 +979,7 @@ cd ../..
 
 或者直接在根目录 `bun add commander` 就够了（Bun workspaces 默认会提升到根）。
 
-### 问题 7：`mkdir: /Users/xxx/.tch-agent: Operation not permitted`
+### 问题 7：`mkdir: /Users/xxx/.tinyfat: Operation not permitted`
 
 **原因**：macOS 的 App Sandbox 或 Full Disk Access 拦截了。
 
@@ -1035,7 +1035,7 @@ find node_modules -name "*.d.ts" -path "*pi-coding-agent*" | head -3
 
 - 实现 ConfigManager 异步单例
 - 集成 pi-coding-agent SDK 的 AuthStorage / ModelRegistry / SettingsManager
-- 加 `tch-agent init` / `paths` CLI 命令
+- 加 `tinyfat init` / `paths` CLI 命令
 - 看到目录被自动创建
 
 📦 **新增/修改文件**：
@@ -1063,7 +1063,7 @@ apps/cli/src/main.ts                ← 加 init / paths 命令
 
 1. 如果你要支持多个用户用同一台机器（比如共享服务器），单例会出什么问题？怎么解决？
 2. `private static instance` 改成实例字段会怎样？试一下。
-3. 如果想加 `tch-agent doctor` 自检命令，你会检查哪些项？（提示：Bun 版本、目录权限、SDK 对象就绪、必填配置是否填写）
+3. 如果想加 `tinyfat doctor` 自检命令，你会检查哪些项？（提示：Bun 版本、目录权限、SDK 对象就绪、必填配置是否填写）
 
 ---
 
@@ -1074,7 +1074,7 @@ apps/cli/src/main.ts                ← 加 init / paths 命令
 - 实现 API Key 的增删查（`setApiKey` / `removeApiKey` / `listApiKeys`）
 - 实现 Provider 偏好（自建 OpenAI 兼容网关等）
 - 实现 Model 偏好（给某个真实模型起短别名，prompt 通过它引用）
-- 加 `tch-agent config api-keys list` 等 CLI 子命令
+- 加 `tinyfat config api-keys list` 等 CLI 子命令
 - 看到配置真的写到 `auth.json` / `provider-prefs.json` 里
 
 继续课时 3 →

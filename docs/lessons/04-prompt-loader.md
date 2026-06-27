@@ -23,19 +23,19 @@
 
 ```bash
 # 列出
-tch-agent config prompts list
+tinyfat config prompts list
 
 # 写一个新 prompt（交互式）
-tch-agent config prompts create SOLVER
+tinyfat config prompts create SOLVER
 
 # 查看内容
-tch-agent config prompts show SOLVER
+tinyfat config prompts show SOLVER
 
 # 删除
-tch-agent config prompts remove SOLVER
+tinyfat config prompts remove SOLVER
 ```
 
-prompt 文件存放在 `~/.tch-agent/config/prompts/SOLVER.md`，格式：
+prompt 文件存放在 `~/.tinyfat/config/prompts/SOLVER.md`，格式：
 
 ```markdown
 ---
@@ -358,7 +358,7 @@ export function toPromptTemplate(prompt: PromptFile): PromptTemplate {
         content: prompt.content,
         filePath: `/prompts/${prompt.name}.md`,
         // SDK 的 PromptTemplate 把 sourceInfo 设成必填。
-        // 这些 prompt 来自 ~/.tch-agent/config/prompts/，scope 是 user。
+        // 这些 prompt 来自 ~/.tinyfat/config/prompts/，scope 是 user。
         sourceInfo: createSyntheticSourceInfo(`/prompts/${prompt.name}.md`, {
             source: prompt.name,
             scope: "user",
@@ -647,7 +647,7 @@ promptsCmd
             content: `You are a ${name} agent.\n\nDo your job well.`,
         })
         console.log(`✓ Created prompt: ${name}`)
-        console.log(`  Edit at: ~/.tch-agent/config/prompts/${name}.md`)
+        console.log(`  Edit at: ~/.tinyfat/config/prompts/${name}.md`)
     })
 ```
 
@@ -659,7 +659,7 @@ promptsCmd
 
 ```bash
 # 如果之前没建过，先清空（可选）
-rm -rf ~/.tch-agent
+rm -rf ~/.tinyfat
 
 # 重新 init
 bun run apps/cli/src/main.ts init
@@ -709,13 +709,13 @@ bun run apps/cli/src/main.ts config prompts create reviewer \
 
 ```
 ✓ Created prompt: reviewer
-  Edit at: ~/.tch-agent/config/prompts/reviewer.md
+  Edit at: ~/.tinyfat/config/prompts/reviewer.md
 ```
 
 ### 5.5 编辑 prompt 文件
 
 ```bash
-cat ~/.tch-agent/config/prompts/reviewer.md
+cat ~/.tinyfat/config/prompts/reviewer.md
 ```
 
 **预期**：
@@ -831,7 +831,7 @@ packages/core/src/config/prompts/builtin/SOLVER.md
 
 - 实现 resolvePromptSession（Prompt → AgentSessionOptions）
 - 实现 createSolverSession（装配 + 启动）
-- 加 `tch-agent solver --prompt SOLVER <task>` CLI
+- 加 `tinyfat solver --prompt SOLVER <task>` CLI
 - 在本地跑通"LLM 调 bash 工具"
 
 继续课时 5 →

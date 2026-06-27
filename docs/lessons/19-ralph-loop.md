@@ -393,9 +393,9 @@ bun run apps/cli/src/main.ts challenge create \
   --total-score 300
 
 # 加 flags
-cat ~/.tch-agent/challenge/test-multi/challenge.json | \
+cat ~/.tinyfat/challenge/test-multi/challenge.json | \
   jq '. + {flags: ["flag{1}", "flag{2}", "flag{3}"]}' > /tmp/c.json && \
-  mv /tmp/c.json ~/.tch-agent/challenge/test-multi/challenge.json
+  mv /tmp/c.json ~/.tinyfat/challenge/test-multi/challenge.json
 
 # 启动实例
 bun run apps/cli/src/main.ts challenge start test-multi 2>/dev/null || true
@@ -437,11 +437,11 @@ bun run apps/cli/src/main.ts runtime launch \
 ### 4.4 看落盘的 ralph 痕迹
 
 ```bash
-ls ~/.tch-agent/solvers/<id>/session/
+ls ~/.tinyfat/solvers/<id>/session/
 # 多个 .jsonl 文件
 
 # 看消息历史，应该看到 customType=challenge-continuation 的消息
-grep "challenge-continuation" ~/.tch-agent/solvers/<id>/session/*.jsonl | head -3
+grep "challenge-continuation" ~/.tinyfat/solvers/<id>/session/*.jsonl | head -3
 ```
 
 ### 4.5 类型检查

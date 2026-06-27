@@ -827,16 +827,16 @@ bun run apps/cli/src/main.ts runtime launch --prompt SOLVER "ls /tmp"
 ### 5.2 看 observer 状态文件
 
 ```bash
-ls ~/.tch-agent/solvers/<id>/session/.observer/
+ls ~/.tinyfat/solvers/<id>/session/.observer/
 # state.json  review-queue/  rounds/
 
-cat ~/.tch-agent/solvers/<id>/session/.observer/state.json
+cat ~/.tinyfat/solvers/<id>/session/.observer/state.json
 # { "round": 6, ... }
 
-ls ~/.tch-agent/solvers/<id>/session/.observer/rounds/
+ls ~/.tinyfat/solvers/<id>/session/.observer/rounds/
 # 000001.json  000002.json ...
 
-ls ~/.tch-agent/solvers/<id>/session/.observer/review-queue/
+ls ~/.tinyfat/solvers/<id>/session/.observer/review-queue/
 # 队列文件（处理后会自动删除）
 ```
 

@@ -26,10 +26,10 @@
 
 ```bash
 # 加 API Key
-tch-agent config api-keys set openai sk-xxxxx
+tinyfat config api-keys set openai sk-xxxxx
 
 # 列表（表格格式）
-tch-agent config api-keys list
+tinyfat config api-keys list
 # ┌─────────┬────────────────┐
 # │ Provider│ Key Preview    │
 # ├─────────┼────────────────┤
@@ -37,20 +37,20 @@ tch-agent config api-keys list
 # └─────────┴────────────────┘
 
 # 加 Provider 偏好（自建 OpenAI 兼容网关）
-tch-agent config providers add \
+tinyfat config providers add \
   --id my-gateway \
   --name "My OpenAI Gateway" \
   --api openai-completions \
   --base-url https://gateway.example.com/v1
 
 # 加 Model 偏好（给真实 model 起短别名）
-tch-agent config model-prefs add \
+tinyfat config model-prefs add \
   --id work-gpt4 \
   --provider my-gateway \
   --model-id gpt-4o
 ```
 
-完成后，`~/.tch-agent/config/` 下会多出 `provider-prefs.json` 和 `model-prefs.json`。
+完成后，`~/.tinyfat/config/` 下会多出 `provider-prefs.json` 和 `model-prefs.json`。
 
 ---
 
@@ -637,7 +637,7 @@ bun run apps/cli/src/main.ts --help
 **预期**：
 
 ```
-Usage: tch-agent [options] [command]
+Usage: tinyfat [options] [command]
 
 CTF / pentest multi-agent platform
 
@@ -660,7 +660,7 @@ bun run apps/cli/src/main.ts config --help
 **预期**：
 
 ```
-Usage: tch-agent config [options] [command]
+Usage: tinyfat config [options] [command]
 
 Configuration management
 
@@ -748,8 +748,8 @@ work-gpt4       openai          gpt-4o          medium
 ### 4.5 验证文件真的写入
 
 ```bash
-cat ~/.tch-agent/config/provider-prefs.json
-cat ~/.tch-agent/config/model-prefs.json
+cat ~/.tinyfat/config/provider-prefs.json
+cat ~/.tinyfat/config/model-prefs.json
 ```
 
 应该看到刚才配置的 JSON。
@@ -821,7 +821,7 @@ packages/core/src/config/providers/types.ts
 
 - 定义 Prompt 文件的 YAML frontmatter 格式
 - 实现 load / save / list / remove CRUD
-- 加 `tch-agent config prompts list` 等 CLI 命令
+- 加 `tinyfat config prompts list` 等 CLI 命令
 - 让 prompt 能引用 model 偏好 ID
 
 继续课时 4 →

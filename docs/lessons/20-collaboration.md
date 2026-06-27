@@ -633,9 +633,9 @@ bun run apps/cli/src/main.ts settings set challenge.mockEnabled true
 bun run apps/cli/src/main.ts challenge create --id multi --title "Multi" --flag-count 2
 
 # 加 flags
-cat ~/.tch-agent/challenge/multi/challenge.json | \
+cat ~/.tinyfat/challenge/multi/challenge.json | \
   jq '. + {flags: ["flag{a}", "flag{b}"]}' > /tmp/c.json && \
-  mv /tmp/c.json ~/.tch-agent/challenge/multi/challenge.json
+  mv /tmp/c.json ~/.tinyfat/challenge/multi/challenge.json
 
 # 2. 启 web + planner loop
 bun run apps/cli/src/main.ts web &
@@ -736,7 +736,7 @@ packages/core/src/challenge/attack-timeline.ts
 
 ```
 ┌─ apps/cli ────────────────────────────────────────────┐
-│  tch-agent 命令行入口（commander）                     │
+│  tinyfat 命令行入口（commander）                     │
 └────────────────────────────────────────────────────────┘
           ↓
 ┌─ packages/core ───────────────────────────────────────┐
