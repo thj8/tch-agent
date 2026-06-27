@@ -277,6 +277,14 @@ export class RuntimeManager {
 
         const injection = await resolveSolverInjection()
 
+        // 组装 binds
+        // "Binds": [
+        //     "/home/sugar/.tinyfat:/root/.tinyfat",
+        //     "/home/sugar/.tinyfat/solvers/e612d186:/runtime",
+        //     "/home/sugar/.tinyfat/solvers/e612d186/workspace:/root/workspace",
+        //     "/home/sugar/.tinyfat/runtime/self/tinyfat-linux-x64:/opt/tinyfat/tinyfat:ro",
+        //     "/home/sugar/.tinyfat/runtime/self/package.json:/opt/tinyfat/package.json:ro"
+        // ],
         const binds = [
             ...(this.config.binds ?? []),
             `${TCH_AGENT_HOME_DIR}:/root/.tinyfat`,
@@ -431,9 +439,12 @@ export class RuntimeManager {
     }
 
     /**
-     * 读容器的 stdout，做两件事：
-     *   1. 等第一条 init 响应（initReady Promise）
-     *   2. 后续每行作为事件转发给 event handler
+     * 读容器的 stdout，做三件事：
+     *   1. 等第一条 init 响应（用 external-promise 把 initReady 暴露给 launch() await）
+     *   2. 拦截 host_bridge_request，转交 handleHostBridgeRequest（不计入事件流）
+     *   3. 其余每行作为 AgentSessionEvent 转发给 event handler
+     *
+     * 返回的 initReady 由 launch() 配合 30s 超时 await。
      */
     private readStream(
         solverId: string,
@@ -441,6 +452,8 @@ export class RuntimeManager {
     ): Promise<void> {
         const decoder = new TextDecoder()
 
+        // external-promise 模式：把 resolve/reject 提到外面，这样下面的 stdout 读取循环
+        // 能在收到 init 响应时控制这个 Promise 的状态，launch() 才能对它 await。
         let resolveInit!: () => void
         let rejectInit!: (err: Error) => void
         const initReady = new Promise<void>((res, rej) => {
@@ -450,6 +463,8 @@ export class RuntimeManager {
 
         let initResolved = false
 
+        // stdout 读取循环：流是 chunk 流，一个 chunk 可能含半行 / 多行，
+        // 按 "\n" 切 buffer 逐行处理。
         ;(async () => {
             const reader = proc.stdout.getReader()
             let buffer = ""
@@ -466,6 +481,7 @@ export class RuntimeManager {
                         buffer = buffer.slice(idx + 1)
                         if (!line) continue
 
+                        // 每行是一条 JSONL。解析失败只告警、跳过，不让坏行炸掉整个循环。
                         let event: unknown
                         try {
                             event = JSON.parse(line)
@@ -474,6 +490,8 @@ export class RuntimeManager {
                             continue
                         }
 
+                        // ── 职责 1：握手。第一条响应必须是 init，按 success 决定 resolve/reject。
+                        //    initResolved 守卫保证只处理一次，之后这层 if 不再进入。
                         if (!initResolved) {
                             const response = event as {
                                 type?: string
@@ -492,19 +510,24 @@ export class RuntimeManager {
                             }
                         }
 
+                        // ── 职责 2：host bridge。容器反查宿主的请求不走事件流，单独交给
+                        //    handleHostBridgeRequest（其结果会以 host_bridge_response 推回容器）。
                         const maybeBridgeReq = event as { type?: string }
                         if (maybeBridgeReq.type === "host_bridge_request") {
                             void this.handleHostBridgeRequest(solverId, event as HostBridgeRequestEvent)
                             continue
                         }
 
+                        // ── 职责 3：普通 AgentSessionEvent，扇出给所有 handler（CLI 打印 / web 推送 / …）。
                         this.emit(solverId, event as AgentSessionEvent)
                     }
                 }
             } catch (error) {
+                // 读取过程抛错（流异常）：若 init 还没成功，把它当 init 失败报出去。
                 if (!initResolved) rejectInit(error as Error)
             }
 
+            // stdout 关闭 = 容器退出。收尾：记 exit code、更新 solver 状态、清掉 proc 句柄。
             const exitCode = await proc.exited
             console.log(`[${solverId}] container exited with code ${exitCode}`)
 
@@ -518,6 +541,7 @@ export class RuntimeManager {
             this.procs.delete(solverId)
         })()
 
+        // stderr 单开一个循环原样打印，方便看容器内的日志 / 报错（不影响上面的 stdout 协议）。
         if (proc.stderr) {
             const errReader = proc.stderr.getReader()
             ;(async () => {

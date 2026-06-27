@@ -395,7 +395,6 @@ export class RuntimeManager {
         // 决定 binary injection
         const injection = await resolveSolverInjection()
 
-        // 组装 binds
         const binds = [
             ...(this.config.binds ?? []),
             `${baseDir}:${containerRuntimeDir}`,
