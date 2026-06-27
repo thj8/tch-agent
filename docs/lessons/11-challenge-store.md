@@ -22,11 +22,11 @@
 ## 最终效果
 
 ```bash
-tch-agent challenge create --id test-1 --title "Test CTF" --flag-count 3
-tch-agent challenge list
-tch-agent challenge show test-1
-tch-agent challenge append-attempt --id test-1 --solver-id abc123 --prompt SOLVER
-tch-agent challenge list-attempts test-1
+tinyfat challenge create --id test-1 --title "Test CTF" --flag-count 3
+tinyfat challenge list
+tinyfat challenge show test-1
+tinyfat challenge append-attempt --id test-1 --solver-id abc123 --prompt SOLVER
+tinyfat challenge list-attempts test-1
 ```
 
 ---
@@ -58,7 +58,7 @@ challenge 有多种数据：
 **我们用更合理的布局**：
 
 ```
-~/.tch-agent/challenge/<encodedChallengeId>/
+~/.tinyfat/challenge/<encodedChallengeId>/
 ├── challenge.json             ← 元数据（小文件，频繁读）
 ├── attempts/
 │   └── <ts>-<id>.json         ← 每次启动一个文件
@@ -118,7 +118,7 @@ import { stat } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { TCH_AGENT_HOME_DIR } from "../config/index"
 
-/** challenge 数据根目录：~/.tch-agent/challenge/ */
+/** challenge 数据根目录：~/.tinyfat/challenge/ */
 export const DEFAULT_CHALLENGE_DIR = resolve(TCH_AGENT_HOME_DIR, "challenge")
 
 /**
@@ -488,7 +488,25 @@ export function computeChallengeCompleted(challenge: ChallengeInfoRecord | undef
 
 ## 第三步：CLI 命令
 
-在 `apps/cli/src/main.ts` 加 challenge 命令组：
+先把本课新增的符号加到 `apps/cli/src/main.ts` 顶部的 `@my/core` import：
+
+```typescript
+import {
+    ConfigManager,
+    DEFAULT_CONFIG_DIR,
+    DEFAULT_CHALLENGE_DIR,
+    saveChallengeRecord,
+    listChallengeRecords,
+    readChallengeRecord,
+    appendChallengeAttemptLog,
+    listChallengeAttemptLogs,
+    // ...之前已 import 的保留
+} from "@my/core"
+```
+
+> 💡 `@my/core` 是 monorepo 内部包，被多条命令用到，统一在顶部 import；不要 `await import()`（详见 lesson 5/6 的说明）。
+
+然后加 challenge 命令组：
 
 ```typescript
 // ── challenge 命令组 ────────────────────────────────────
@@ -504,10 +522,6 @@ challengeCmd
     .option("--flag-count <n>", "Flag count", "1")
     .option("--total-score <n>", "Total score", "100")
     .action(async (opts) => {
-        const { ConfigManager, DEFAULT_CONFIG_DIR } = await import("@my/core")
-        const config = await ConfigManager.getInstance()
-        const { saveChallengeRecord, DEFAULT_CHALLENGE_DIR } = await import("@my/core")
-
         // 简化：直接用 DEFAULT_CHALLENGE_DIR
         await saveChallengeRecord(
             DEFAULT_CHALLENGE_DIR,
@@ -535,7 +549,6 @@ challengeCmd
     .command("list")
     .description("List all challenges")
     .action(async () => {
-        const { listChallengeRecords, DEFAULT_CHALLENGE_DIR } = await import("@my/core")
         const list = await listChallengeRecords(DEFAULT_CHALLENGE_DIR)
         if (list.length === 0) {
             console.log("(no challenges)")
@@ -554,7 +567,6 @@ challengeCmd
     .command("show <id>")
     .description("Show challenge details")
     .action(async (id: string) => {
-        const { readChallengeRecord, DEFAULT_CHALLENGE_DIR } = await import("@my/core")
         const c = await readChallengeRecord(DEFAULT_CHALLENGE_DIR, id)
         if (!c) {
             console.error(`✗ Challenge not found: ${id}`)
@@ -571,7 +583,6 @@ challengeCmd
     .requiredOption("--prompt <name>", "Prompt name")
     .requiredOption("--task <task>", "Task")
     .action(async (opts) => {
-        const { appendChallengeAttemptLog, DEFAULT_CHALLENGE_DIR } = await import("@my/core")
         await appendChallengeAttemptLog(DEFAULT_CHALLENGE_DIR, {
             challengeId: opts.id,
             solverId: opts.solverId,
@@ -585,7 +596,6 @@ challengeCmd
     .command("list-attempts <id>")
     .description("List attempts for a challenge")
     .action(async (id: string) => {
-        const { listChallengeAttemptLogs, DEFAULT_CHALLENGE_DIR } = await import("@my/core")
         const list = await listChallengeAttemptLogs(DEFAULT_CHALLENGE_DIR, id)
         if (list.length === 0) {
             console.log("(no attempts)")
@@ -682,11 +692,11 @@ bun run apps/cli/src/main.ts challenge list-attempts test-1
 ### 4.6 看文件布局
 
 ```bash
-ls ~/.tch-agent/challenge/test-1/
+ls ~/.tinyfat/challenge/test-1/
 # challenge.json  attempts/  submissions/  locks/
 
-cat ~/.tch-agent/challenge/test-1/challenge.json
-ls ~/.tch-agent/challenge/test-1/attempts/
+cat ~/.tinyfat/challenge/test-1/challenge.json
+ls ~/.tinyfat/challenge/test-1/attempts/
 ```
 
 ### 4.7 类型检查
@@ -706,7 +716,7 @@ bun run typecheck
 **解决**：手动清理：
 
 ```bash
-rm -rf ~/.tch-agent/challenge/test-1/locks
+rm -rf ~/.tinyfat/challenge/test-1/locks
 ```
 
 或等 60s 自动 stale 清理。
@@ -718,7 +728,7 @@ rm -rf ~/.tch-agent/challenge/test-1/locks
 **解决**：
 
 ```bash
-sudo chown -R $(whoami) ~/.tch-agent
+sudo chown -R $(whoami) ~/.tinyfat
 ```
 
 ### 问题 3：JSON 解析失败
@@ -728,7 +738,7 @@ sudo chown -R $(whoami) ~/.tch-agent
 **解决**：readJsonFile 已经 catch 了，返回 undefined。但要修复原文件：
 
 ```bash
-cat ~/.tch-agent/challenge/test-1/challenge.json
+cat ~/.tinyfat/challenge/test-1/challenge.json
 # 看是不是半个 JSON
 ```
 

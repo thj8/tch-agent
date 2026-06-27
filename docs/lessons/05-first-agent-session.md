@@ -23,7 +23,7 @@
 ## 最终效果
 
 ```bash
-tch-agent solver --prompt SOLVER "ls /tmp 然后告诉我看到了什么"
+tinyfat solver --prompt SOLVER "ls /tmp 然后告诉我看到了什么"
 ```
 
 **预期输出**：
@@ -387,7 +387,7 @@ export interface SolverSession {
  * 创建一个 Solver AgentSession。
  *
  * 流程：
- *   1. 准备 workspace / session 目录（默认在 ~/.tch-agent/solvers/<id>/）
+ *   1. 准备 workspace / session 目录（默认在 ~/.tinyfat/solvers/<id>/）
  *   2. resolvePromptSession 装配 SDK 选项
  *   3. createAgentSession + bindExtensions
  *
@@ -405,8 +405,8 @@ export async function createSolverSession(init: {
 }): Promise<SolverSession> {
     const config = await ConfigManager.getInstance()
 
-    // 1. 准备目录（默认布局：~/.tch-agent/solvers/<id>/）
-    const homeDir = resolve(homedir(), ".tch-agent")
+    // 1. 准备目录（默认布局：~/.tinyfat/solvers/<id>/）
+    const homeDir = resolve(homedir(), ".tinyfat")
     const solversDir = resolve(homeDir, "solvers")
     const workspaceDir = resolve(solversDir, init.solverId, "workspace")
     const sessionDir = resolve(solversDir, init.solverId, "session")
@@ -644,6 +644,14 @@ export type { SolverSession } from "./solver/session"
 
 ### 3.3 在 apps/cli/src/main.ts 加 solver 命令
 
+先把 `runSolverCli` 加到顶部 `@my/core` 的 import：
+
+```typescript
+import { ConfigManager, runSolverCli } from "@my/core"
+```
+
+> 💡 **顶部静态 import vs `await import()`**：`@my/core` 是 monorepo 内部包，已经被其他命令（`init` / `config *`）静态 import 过了，dynamic import 不会带来代码分割收益。所以统一在顶部 import，避免一种"是不是有什么特殊原因要 dynamic"的困惑。**唯一例外**是 `await import("@my/ui-web")`：那是另一个包，重（React + Tailwind sidecar），且只有 `web` 命令用到，dynamic 才有意义。
+
 在 `main()` 里追加（在 `config` 命令组之后）：
 
 ```typescript
@@ -655,7 +663,6 @@ program
     .requiredOption("-p, --prompt <name>", "Prompt name")
     .argument("<task>", "Task description")
     .action(async (task: string, opts: { prompt: string }) => {
-        const { runSolverCli } = await import("@my/core")
         try {
             await runSolverCli({
                 promptName: opts.prompt,
@@ -671,7 +678,7 @@ program
     })
 ```
 
-> 💡 **不要写 `program.command("solver list")`**：commander 会把它当成名为 `solver` 的命令注册，和上面那条冲突。要列出可用 prompt 用 `tch-agent config prompts list`（lesson 4 已有）。
+> 💡 **不要写 `program.command("solver list")`**：commander 会把它当成名为 `solver` 的命令注册，和上面那条冲突。要列出可用 prompt 用 `tinyfat config prompts list`（lesson 4 已有）。
 
 ### 3.4 关键设计点
 
@@ -730,7 +737,7 @@ Solver 跑在 headless CLI 里，没人真的在敲终端，严格说更接近 `
 
 GLM 用模式 A——provider 名 `glm`，自定义 model 列表 `[glm-5, glm-5.2]`。
 
-> 🔒 **API Key 安全**：所有 key 写到 `~/.tch-agent/config/auth.json`（已 gitignore）。**永远不要**把 key 写进代码、测试、commit message、文档示例。
+> 🔒 **API Key 安全**：所有 key 写到 `~/.tinyfat/config/auth.json`（已 gitignore）。**永远不要**把 key 写进代码、测试、commit message、文档示例。
 
 ### 4.1 加 API Key
 
@@ -740,7 +747,7 @@ GLM 用模式 A——provider 名 `glm`，自定义 model 列表 `[glm-5, glm-5.
 bun run apps/cli/src/main.ts config api-keys set glm <your-token>
 ```
 
-写入 `~/.tch-agent/config/auth.json`。applyProviderPrefs 注册时会按 provider 名查 AuthStorage 把 key 传给 SDK（SDK 校验 full registration 必须带 apiKey）。
+写入 `~/.tinyfat/config/auth.json`。applyProviderPrefs 注册时会按 provider 名查 AuthStorage 把 key 传给 SDK（SDK 校验 full registration 必须带 apiKey）。
 
 ### 4.2 加 Provider 偏好（full registration + 自定义 model 列表）
 
@@ -784,7 +791,7 @@ bun run apps/cli/src/main.ts config model-prefs add \
 
 ### 4.4 让 SOLVER prompt 用这个 model
 
-编辑 `~/.tch-agent/config/prompts/SOLVER.md`，加一行 `model: main-glm`：
+编辑 `~/.tinyfat/config/prompts/SOLVER.md`，加一行 `model: main-glm`：
 
 ```markdown
 ---
@@ -811,7 +818,7 @@ You are a helpful agent...
 ### 实际存储长什么样
 
 ```
-~/.tch-agent/config/
+~/.tinyfat/config/
 ├── auth.json            ← SDK 凭证库（按 provider 名存 key）
 ├── provider-prefs.json  ← provider 注册说明（baseUrl / api / 自定义 model 列表）
 ├── model-prefs.json     ← 用户起的别名 → (provider, modelId)
@@ -953,13 +960,13 @@ bun run apps/cli/src/main.ts solver --prompt SOLVER \
 ### 5.3 看对话历史落盘
 
 ```bash
-ls ~/.tch-agent/solvers/
+ls ~/.tinyfat/solvers/
 # 看到一个 8 字符 ID 目录
 
-ls ~/.tch-agent/solvers/<id>/session/
+ls ~/.tinyfat/solvers/<id>/session/
 # 看到一个或多个 .jsonl 文件
 
-head -2 ~/.tch-agent/solvers/<id>/session/*.jsonl
+head -2 ~/.tinyfat/solvers/<id>/session/*.jsonl
 # 第二行 model_change 应该是 provider+modelId 都是你配的（如 glm/glm-5），
 # 不是 anthropic/claude-sonnet-4-5（那是 override-only + 兜底映射的征兆）
 ```
@@ -1013,7 +1020,7 @@ bun run apps/cli/src/main.ts config api-keys set glm <your-token>
 bun run apps/cli/src/main.ts config providers remove anthropic
 ```
 
-然后 `cat ~/.tch-agent/solvers/<id>/session/*.jsonl | head -2`，第二行 `model_change` 应该是 `"provider":"glm","modelId":"glm-5"`。
+然后 `cat ~/.tinyfat/solvers/<id>/session/*.jsonl | head -2`，第二行 `model_change` 应该是 `"provider":"glm","modelId":"glm-5"`。
 
 ### 问题 4：跑起来但 LLM 没调工具
 

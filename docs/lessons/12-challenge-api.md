@@ -22,13 +22,13 @@
 
 ```bash
 # mock 模式
-tch-agent challenge mock-mode --enable
-tch-agent challenge sync         # 同步赛题列表（mock）
+tinyfat challenge mock-mode --enable
+tinyfat challenge sync         # 同步赛题列表（mock）
 
 # 或对接真实平台
-tch-agent challenge mock-mode --disable
-tch-agent config host-settings set challenge.apiBaseUrl https://api.ctf.example.com
-tch-agent config host-settings set challenge.agentToken xxx
+tinyfat challenge mock-mode --disable
+tinyfat config host-settings set challenge.apiBaseUrl https://api.ctf.example.com
+tinyfat config host-settings set challenge.agentToken xxx
 ```
 
 ---
@@ -443,7 +443,7 @@ async isChallengeMockMode(): Promise<boolean> {
 
 ## 第三步：CLI 命令
 
-在 `apps/cli/src/main.ts` 加：
+`ConfigManager` 已经在 lesson 2/5 顶部 import 过了，直接用。在 `apps/cli/src/main.ts` 加：
 
 ```typescript
 // ── host-settings 命令 ──────────────────────────────────
@@ -454,7 +454,6 @@ settingsCmd
     .command("show")
     .description("Show current host settings")
     .action(async () => {
-        const { ConfigManager } = await import("@my/core")
         const config = await ConfigManager.getInstance()
         const settings = await config.getHostSettings()
         console.log(JSON.stringify(settings, null, 2))
@@ -466,7 +465,6 @@ settingsCmd
     .argument("<path>", "Setting path (e.g., challenge.mockEnabled)")
     .argument("<value>", "Value (true/false/string)")
     .action(async (path: string, value: string) => {
-        const { ConfigManager } = await import("@my/core")
         const config = await ConfigManager.getInstance()
 
         // 解析 value

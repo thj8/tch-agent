@@ -22,7 +22,7 @@
 ## 最终效果
 
 ```
-~/.tch-agent/challenge/<id>/
+~/.tinyfat/challenge/<id>/
 ├── ideas/
 │   ├── index.json             ← 全部 ideas 扁平数组
 │   └── by-id/
@@ -34,10 +34,10 @@
 ```
 
 ```bash
-tch-agent memory add test-1 --kind fact --content "..." --source solver-abc
-tch-agent memory list test-1
-tch-agent idea add test-1 --content "test SQL injection"
-tch-agent idea update test-1 idea_a3f9 --status testing --result "found vulnerability"
+tinyfat memory add test-1 --kind fact --content "..." --source solver-abc
+tinyfat memory list test-1
+tinyfat idea add test-1 --content "test SQL injection"
+tinyfat idea update test-1 idea_a3f9 --status testing --result "found vulnerability"
 ```
 
 ---
@@ -59,8 +59,8 @@ tch-agent idea update test-1 idea_a3f9 --status testing --result "found vulnerab
 
 | 层级 | 位置 | 共享范围 |
 |---|---|---|
-| **challenge 级** | `~/.tch-agent/challenge/<id>/` | 该题目下所有 solver 共享 |
-| **solver 级** | `~/.tch-agent/solvers/<id>/session/.observer/` | 单个 solver 私有 |
+| **challenge 级** | `~/.tinyfat/challenge/<id>/` | 该题目下所有 solver 共享 |
+| **solver 级** | `~/.tinyfat/solvers/<id>/session/.observer/` | 单个 solver 私有 |
 
 为什么分两层？
 
@@ -575,9 +575,9 @@ async deleteIdea(challengeId: string, ideaIdOrPrefix: string) {
 
 ## 第三步：CLI 命令
 
-```typescript
-// 在 challenge 命令组后加 memory 命令组：
+`DaemonManager` 已经在 lesson 13 顶部 import 过了，直接用。在 challenge 命令组后加 memory / idea 命令组：
 
+```typescript
 const memoryCmd = program.command("memory").description("Memory/Ideas CRUD")
 
 memoryCmd
@@ -587,7 +587,6 @@ memoryCmd
     .requiredOption("--content <text>", "Content")
     .requiredOption("--source <source>", "Source (solver id or 'manual')")
     .action(async (challengeId: string, opts) => {
-        const { DaemonManager } = await import("@my/core")
         const daemon = await DaemonManager.getInstance()
         const entry = await daemon.challenge.appendMemory({
             challengeId,
@@ -602,7 +601,6 @@ memoryCmd
     .command("list <challengeId>")
     .description("List memory entries")
     .action(async (challengeId: string) => {
-        const { DaemonManager } = await import("@my/core")
         const daemon = await DaemonManager.getInstance()
         const list = await daemon.challenge.listMemory(challengeId)
         if (list.length === 0) {
@@ -621,7 +619,6 @@ ideaCmd
     .description("Add an idea")
     .requiredOption("--content <text>", "Content")
     .action(async (challengeId: string, opts) => {
-        const { DaemonManager } = await import("@my/core")
         const daemon = await DaemonManager.getInstance()
         const result = await daemon.challenge.addIdea(challengeId, {
             content: opts.content,
@@ -633,7 +630,6 @@ ideaCmd
     .command("list <challengeId>")
     .description("List ideas")
     .action(async (challengeId: string) => {
-        const { DaemonManager } = await import("@my/core")
         const daemon = await DaemonManager.getInstance()
         const list = await daemon.challenge.listIdeas(challengeId)
         if (list.length === 0) {
@@ -651,7 +647,6 @@ ideaCmd
     .option("--status <status>", "Status (pending/testing/verified/failed/skipped)")
     .option("--result <text>", "Result")
     .action(async (challengeId: string, ideaIdOrPrefix: string, opts) => {
-        const { DaemonManager } = await import("@my/core")
         const daemon = await DaemonManager.getInstance()
         const updated = await daemon.challenge.updateIdea(challengeId, ideaIdOrPrefix, {
             status: opts.status,
@@ -739,16 +734,16 @@ bun run apps/cli/src/main.ts idea add test-1 --content "TEST SQL INJECTION ON /l
 ### 4.7 看文件布局
 
 ```bash
-ls ~/.tch-agent/challenge/test-1/
+ls ~/.tinyfat/challenge/test-1/
 # attempts/  challenge.json  ideas/  locks/  memory/  submissions/
 
-ls ~/.tch-agent/challenge/test-1/ideas/
+ls ~/.tinyfat/challenge/test-1/ideas/
 # by-id/  index.json
 
-cat ~/.tch-agent/challenge/test-1/ideas/index.json
+cat ~/.tinyfat/challenge/test-1/ideas/index.json
 # 看到 ideas 数组
 
-ls ~/.tch-agent/challenge/test-1/ideas/by-id/
+ls ~/.tinyfat/challenge/test-1/ideas/by-id/
 # idea_xxx.json
 ```
 
@@ -787,7 +782,7 @@ bun run typecheck
 **解决**：
 
 ```bash
-cat ~/.tch-agent/challenge/test-1/ideas/index.json
+cat ~/.tinyfat/challenge/test-1/ideas/index.json
 # 检查是否合法 JSON
 ```
 

@@ -22,7 +22,7 @@
 ## 最终效果
 
 ```bash
-tch-agent challenge start-loop
+tinyfat challenge start-loop
 # → Planner 每 30s 跑一次
 # → 看到 LLM 输出"我应该起 solver 解 test-1"
 # → LLM 调 planner_launch_solver
@@ -529,7 +529,7 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent"
 
 ## 第三步：创建 CHALLENGE_PLANNER prompt
 
-新建 `~/.tch-agent/config/prompts/CHALLENGE_PLANNER.md`：
+新建 `~/.tinyfat/config/prompts/CHALLENGE_PLANNER.md`：
 
 ```markdown
 ---
@@ -575,12 +575,13 @@ Be concise. Don't repeat the snapshot back—just take actions.
 
 ## 第四步：CLI 命令
 
+`DaemonManager` 已经在 lesson 13 顶部 import 过了，直接用：
+
 ```typescript
 challengeCmd
     .command("start-loop")
     .description("Start the planner sync loop")
     .action(async () => {
-        const { DaemonManager } = await import("@my/core")
         const daemon = await DaemonManager.getInstance()
         daemon.challenge.startSyncLoop()
         console.log("Planner loop started. Press Ctrl+C to stop.")
@@ -591,7 +592,6 @@ challengeCmd
     .command("tick")
     .description("Run one planner tick manually")
     .action(async () => {
-        const { DaemonManager } = await import("@my/core")
         const daemon = await DaemonManager.getInstance()
         await daemon.challenge.tickPlanner("manual")
     })
@@ -680,7 +680,7 @@ bun run typecheck
 📦 **新增文件**：
 
 ```
-~/.tch-agent/config/prompts/CHALLENGE_PLANNER.md
+~/.tinyfat/config/prompts/CHALLENGE_PLANNER.md
 ```
 
 🔑 **关键概念**：

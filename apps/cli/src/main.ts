@@ -1,6 +1,13 @@
 #!/usr/bin/env bun
 import { Command } from "commander"
-import { ConfigManager, DEFAULT_CONFIG_DIR, TCH_AGENT_HOME_DIR } from "@my/core"
+import {
+    ConfigManager,
+    DEFAULT_CONFIG_DIR,
+    TCH_AGENT_HOME_DIR,
+    RuntimeManager,
+    runSolverCli,
+    runSolverRpc,
+} from "@my/core"
 import { stat } from "node:fs/promises"
 
 function formatError(error: unknown): string {
@@ -104,7 +111,7 @@ function summarizeResult(result: unknown): string {
 
 async function main() {
   const program = new Command()
-    .name("tch-agent")
+    .name("tinyfat")
     .description("CTF / pentest multi-agent platform")
     .version("0.0.1")
 
@@ -112,7 +119,7 @@ async function main() {
     .description("Initialize config directories and show paths")
     .action(async () => {
 
-      console.log("Initialize tch-agent...\n")
+      console.log("Initialize tinyfat...\n")
 
       const config = await ConfigManager.getInstance()
       console.log("✓ Config directories created:")
@@ -399,7 +406,7 @@ async function main() {
         content: `You are a ${name} agent.\n\nDo your job well.`,
       })
       console.log(`✓ Created prompt: ${name}`)
-      console.log(`  Edit at: ~/.tch-agent/config/prompts/${name}.md`)
+      console.log(`  Edit at: ~/.tinyfat/config/prompts/${name}.md`)
     })
 
   // ── solver 命令 ─────────────────────────────────────────
@@ -412,7 +419,6 @@ async function main() {
     .requiredOption("-p, --prompt <name>", "Prompt name")
     .argument("<task>", "Task description")
     .action(async (task: string, opts: { prompt: string }) => {
-      const { runSolverCli } = await import("@my/core")
       try {
         await runSolverCli({
           promptName: opts.prompt,
@@ -431,7 +437,6 @@ async function main() {
     .command("rpc")
     .description("Start RPC server (reads JSONL from stdin) — runs inside container")
     .action(async () => {
-      const { runSolverRpc } = await import("@my/core")
       try {
         await runSolverRpc()
       } catch (error) {
@@ -448,7 +453,6 @@ async function main() {
     .command("ping")
     .description("Check if Docker daemon is reachable")
     .action(async () => {
-      const { ConfigManager, RuntimeManager } = await import("@my/core")
       const config = await ConfigManager.getInstance()
       const runtime = new RuntimeManager(config)
       const ok = await runtime.ping()
@@ -464,7 +468,6 @@ async function main() {
     .command("build-image")
     .description("Build the solver Docker image (incremental)")
     .action(async () => {
-      const { ConfigManager, RuntimeManager } = await import("@my/core")
       const config = await ConfigManager.getInstance()
       const runtime = new RuntimeManager(config)
       await runtime.init((msg) => console.log(msg))
@@ -475,7 +478,6 @@ async function main() {
     .command("has-image")
     .description("Check if solver image exists locally")
     .action(async () => {
-      const { ConfigManager, RuntimeManager } = await import("@my/core")
       const config = await ConfigManager.getInstance()
       const runtime = new RuntimeManager(config)
       const exists = await runtime.hasImage()
@@ -493,7 +495,6 @@ async function main() {
     .requiredOption("-p, --prompt <name>", "Prompt name")
     .argument("<task>", "Task")
     .action(async (task: string, opts: { prompt: string }) => {
-      const { ConfigManager, RuntimeManager } = await import("@my/core")
       const config = await ConfigManager.getInstance()
       const runtime = new RuntimeManager(config)
 
@@ -521,7 +522,6 @@ async function main() {
     .command("list")
     .description("List all tracked solver instances")
     .action(async () => {
-      const { ConfigManager, RuntimeManager } = await import("@my/core")
       const config = await ConfigManager.getInstance()
       const runtime = new RuntimeManager(config)
       const list = runtime.list()
@@ -536,6 +536,21 @@ async function main() {
       for (const s of list) {
         console.log(`${s.id}\t\t${s.status}\t\t${s.promptName}\t\t${s.containerId}`)
       }
+    })
+
+  program
+    .command("web")
+    .description("Start the web UI server")
+    .option("-p, --port <port>", "Port", "3000")
+    .option("-H, --host <host>", "Hostname", "127.0.0.1")
+    .action(async (opts: { port: string; host: string }) => {
+      const { startWeb } = await import("@my/ui-web")
+      await startWeb({
+        hostname: opts.host,
+        port: parseInt(opts.port, 10),
+      })
+
+      await new Promise(() => {})
     })
 
   await program.parseAsync(process.argv)

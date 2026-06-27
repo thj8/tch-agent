@@ -767,13 +767,19 @@ const opts: CreateAgentSessionOptions = {
 
 ## 第三步：CLI 命令
 
+先把 `DaemonManager` 加到 `apps/cli/src/main.ts` 顶部的 `@my/core` import：
+
 ```typescript
-// challenge 命令组里加 sync
+import { ConfigManager, DaemonManager, /* ...其他 */ } from "@my/core"
+```
+
+然后给 challenge 命令组加 sync：
+
+```typescript
 challengeCmd
     .command("sync")
     .description("Sync challenges from API (or mock)")
     .action(async () => {
-        const { DaemonManager } = await import("@my/core")
         const daemon = await DaemonManager.getInstance()
         const result = await daemon.challenge.listChallenges()
         console.log(`Remote: ${result.remote.total_challenges} challenges`)
@@ -797,7 +803,7 @@ bun run apps/cli/src/main.ts challenge create \
 
 # mock 模式下，需要手动加 flags（真实平台会下发）
 # 直接编辑 challenge.json，加 "flags": ["flag{test}"]
-cat ~/.tch-agent/challenge/test-1/challenge.json | jq '. + {flags: ["flag{test}"]}' > /tmp/c.json && mv /tmp/c.json ~/.tch-agent/challenge/test-1/challenge.json
+cat ~/.tinyfat/challenge/test-1/challenge.json | jq '. + {flags: ["flag{test}"]}' > /tmp/c.json && mv /tmp/c.json ~/.tinyfat/challenge/test-1/challenge.json
 ```
 
 ### 4.2 sync 验证
@@ -885,8 +891,8 @@ bun run apps/cli/src/main.ts settings set challenge.agentToken xxx
 **解决**：
 
 ```bash
-cat ~/.tch-agent/challenge/test-1/challenge.json | jq '. + {flags: ["flag{test}"]}' > /tmp/c.json
-mv /tmp/c.json ~/.tch-agent/challenge/test-1/challenge.json
+cat ~/.tinyfat/challenge/test-1/challenge.json | jq '. + {flags: ["flag{test}"]}' > /tmp/c.json
+mv /tmp/c.json ~/.tinyfat/challenge/test-1/challenge.json
 ```
 
 ### 问题 3：finishChallenge 没停 solver
@@ -902,7 +908,7 @@ mv /tmp/c.json ~/.tch-agent/challenge/test-1/challenge.json
 **解决**：跑 launch 时加 env：
 
 ```bash
-tch-agent runtime launch --prompt SOLVER -e TCH_CHALLENGE_ID=test-1 "..."
+tinyfat runtime launch --prompt SOLVER -e TCH_CHALLENGE_ID=test-1 "..."
 ```
 
 ---

@@ -22,11 +22,11 @@
 ## 最终效果
 
 ```bash
-tch-agent runtime launch --prompt SOLVER "test task"
+tinyfat runtime launch --prompt SOLVER "test task"
 # → 容器启动，看到容器内的输出打到 stdout
 # → Ctrl+C 停止
 
-tch-agent runtime list
+tinyfat runtime list
 # → 看到正在跑的 solver 列表
 ```
 
@@ -82,14 +82,14 @@ docker run -v /Users/me/data:/data ...
 
 **本项目用 volume 做 3 件事**：
 
-1. **共享配置**：把 `~/.tch-agent/config/` 挂载到容器，让容器能读 prompt / skill。
-2. **共享 workspace**：把 `~/.tch-agent/solvers/<id>/workspace/` 挂载到容器 cwd，让 LLM 的产物能落盘到宿主。
-3. **共享 session**：把 `~/.tch-agent/solvers/<id>/session/` 挂载，让对话历史能落盘到宿主。
+1. **共享配置**：把 `~/.tinyfat/config/` 挂载到容器，让容器能读 prompt / skill。
+2. **共享 workspace**：把 `~/.tinyfat/solvers/<id>/workspace/` 挂载到容器 cwd，让 LLM 的产物能落盘到宿主。
+3. **共享 session**：把 `~/.tinyfat/solvers/<id>/session/` 挂载，让对话历史能落盘到宿主。
 
 ### 0.4 Solver 目录布局
 
 ```
-~/.tch-agent/solvers/<solverId>/
+~/.tinyfat/solvers/<solverId>/
 ├── workspace/      ← 容器 cwd（LLM 写文件、跑命令都在这）
 ├── session/        ← 对话历史 JSONL（SDK 落盘）
 └── startup.json    ← 启动快照（事后调试用）
@@ -115,7 +115,7 @@ docker run -v /Users/me/data:/data ...
  * Bun 需要它把 cwd 当成包根。
  */
 const GENERATED_RUNTIME_PACKAGE_JSON = {
-    name: "tch-agent-runtime",
+    name: "tinyfat-runtime",
     version: "0.0.1",
     private: true,
     type: "module",
@@ -128,7 +128,7 @@ const GENERATED_RUNTIME_PACKAGE_JSON = {
  */
 export async function ensureSolverBinary(): Promise<string> {
     const binDir = RUNTIME_SELF_DIR
-    const binPath = resolve(binDir, "tch-agent-linux-x64")
+    const binPath = resolve(binDir, "tinyfat-linux-x64")
 
     // 项目根目录
     const projectRoot = resolve(import.meta.dir, "../../../..")
@@ -160,7 +160,7 @@ export async function ensureSolverBinary(): Promise<string> {
 }
 
 /**
- * 确保 ~/.tch-agent/runtime/self/package.json 存在。
+ * 确保 ~/.tinyfat/runtime/self/package.json 存在。
  * 容器内 Bun 需要它把 cwd 识别为包根。
  */
 async function ensureRuntimePackageManifest(): Promise<string> {
@@ -204,10 +204,10 @@ export async function resolveSolverInjection(): Promise<{
 
     return {
         binds: [
-            `${binary}:/opt/tch-agent/tch-agent:ro`,
-            `${packageJson}:/opt/tch-agent/package.json:ro`,
+            `${binary}:/opt/tinyfat/tinyfat:ro`,
+            `${packageJson}:/opt/tinyfat/package.json:ro`,
         ],
-        cmd: ["/opt/tch-agent/tch-agent", "solver", "rpc"],
+        cmd: ["/opt/tinyfat/tinyfat", "solver", "rpc"],
     }
 }
 ```
@@ -296,7 +296,7 @@ console.log(`[build] ✓ output: ${outfile}`)
 ```json
 {
   "scripts": {
-    "build:solver": "bun scripts/build.ts bun-linux-x64-baseline bin/tch-agent-linux-x64"
+    "build:solver": "bun scripts/build.ts bun-linux-x64-baseline bin/tinyfat-linux-x64"
   }
 }
 ```
@@ -306,7 +306,7 @@ console.log(`[build] ✓ output: ${outfile}`)
 ```bash
 bun run build:solver
 ls -la bin/
-# 看到 tch-agent-linux-x64
+# 看到 tinyfat-linux-x64
 ```
 
 ---
@@ -552,7 +552,7 @@ export class RuntimeManager {
 
 ## 第三步：CLI 命令
 
-在 `apps/cli/src/main.ts` 的 runtimeCmd 后追加：
+`ConfigManager` / `RuntimeManager` 已经在 lesson 6 的顶部 import 加好了，这里直接用。在 `apps/cli/src/main.ts` 的 runtimeCmd 后追加：
 
 ```typescript
 runtimeCmd
@@ -561,7 +561,6 @@ runtimeCmd
     .requiredOption("-p, --prompt <name>", "Prompt name")
     .argument("<task>", "Task")
     .action(async (task: string, opts: { prompt: string }) => {
-        const { ConfigManager, RuntimeManager } = await import("@my/core")
         const config = await ConfigManager.getInstance()
         const runtime = new RuntimeManager(config)
 
@@ -586,7 +585,6 @@ runtimeCmd
     .command("list")
     .description("List all tracked solver instances")
     .action(async () => {
-        const { ConfigManager, RuntimeManager } = await import("@my/core")
         const config = await ConfigManager.getInstance()
         const runtime = new RuntimeManager(config)
         const list = runtime.list()
@@ -613,7 +611,7 @@ runtimeCmd
 确保：
 - Docker daemon 在跑
 - 已 build solver image（课时 6）
-- `~/.tch-agent/config/prompts/SOLVER.md` 存在
+- `~/.tinyfat/config/prompts/SOLVER.md` 存在
 
 ### 4.2 跑 launch
 
@@ -632,7 +630,7 @@ Press Ctrl+C to stop...
 [abc12345] ... (容器内启动日志)
 ```
 
-容器会尝试跑 `/opt/tch-agent/tch-agent solver rpc`，但我们这课时还没实现 RPC server，所以容器会很快报错退出：
+容器会尝试跑 `/opt/tinyfat/tinyfat solver rpc`，但我们这课时还没实现 RPC server，所以容器会很快报错退出：
 
 ```
 [abc12345] container exited with code 1
@@ -643,18 +641,18 @@ Press Ctrl+C to stop...
 ### 4.3 验证目录被创建
 
 ```bash
-ls ~/.tch-agent/solvers/
+ls ~/.tinyfat/solvers/
 # 看到一个 8 字符 ID 目录
 
-ls ~/.tch-agent/solvers/<id>/
+ls ~/.tinyfat/solvers/<id>/
 # workspace/ session/
 ```
 
 ### 4.4 看看 binary 真的被挂进去了
 
 ```bash
-ls ~/.tch-agent/runtime/self/
-# tch-agent-linux-x64 + package.json
+ls ~/.tinyfat/runtime/self/
+# tinyfat-linux-x64 + package.json
 ```
 
 ### 4.5 手动测试镜像和 binary
@@ -662,7 +660,7 @@ ls ~/.tch-agent/runtime/self/
 直接跑 binary 看看：
 
 ```bash
-~/.tch-agent/runtime/self/tch-agent-linux-x64 --help
+~/.tinyfat/runtime/self/tinyfat-linux-x64 --help
 ```
 
 应该看到课时 1 的 hello world（因为 binary 编译时是基于 apps/cli/src/main.ts，还没加真正的子命令路由）。
@@ -716,13 +714,13 @@ bun run build:solver
 ```bash
 # 手动跑容器，进去看
 docker run -it --rm \
-  -v ~/.tch-agent/runtime/self/tch-agent-linux-x64:/opt/tch-agent/tch-agent:ro \
-  -v ~/.tch-agent/runtime/self/package.json:/opt/tch-agent/package.json:ro \
-  tch-agent:latest \
+  -v ~/.tinyfat/runtime/self/tinyfat-linux-x64:/opt/tinyfat/tinyfat:ro \
+  -v ~/.tinyfat/runtime/self/package.json:/opt/tinyfat/package.json:ro \
+  tinyfat:latest \
   bash
 
 # 在容器里：
-$ /opt/tch-agent/tch-agent --help
+$ /opt/tinyfat/tinyfat --help
 # 看错误信息
 ```
 

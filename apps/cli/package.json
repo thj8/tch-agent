@@ -5,6 +5,7 @@
   "type": "module",
   "bin": "src/main.ts",
   "dependencies": {
-    "@my/core": "workspace:*"
+    "@my/core": "workspace:*",
+    "@my/ui-web": "workspace:*"
   }
 }
