@@ -48,6 +48,11 @@ Planner LLM 自动调度 solver、challenge 数据存储、实时 SSE 推送。
 - [x] [课时 19：Ralph Loop（强制续跑）](./19-ralph-loop.md)
 - [x] [课时 20：协作广播 + Attack Timeline](./20-collaboration.md)
 
+### 阶段 5：工程化（课时 21）
+代码长大了之后的重构。
+
+- [x] [课时 21：CLI 模块化重构 —— 拆开 main.ts](./21-cli-refactor.md)
+
 ## 前置准备
 
 开始第 1 课前，确认你已安装：

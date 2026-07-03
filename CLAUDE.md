@@ -12,7 +12,15 @@ CTF / 渗透测试多 Agent 协作平台。
 ## 项目结构
 
 ```
-apps/cli/src/main.ts                commander CLI（命令注册都在这里）
+apps/cli/src/
+  main.ts                          入口：装配 program + 挂命令组 + parseAsync + 全局错误处理（约 40 行）
+  utils.ts                         formatError / pathExists
+  event-summary.ts                 summarizeEvent 一族（AgentSession 事件 → 一行摘要）
+  commands/                        命令组，每个文件导出 registerXxxCommands(program)
+    misc.ts                        init / paths / web（顶层命令）
+    config.ts                      config（api-keys / providers / model-prefs / prompts）
+    solver.ts                      solver（run / rpc）
+    runtime.ts                     runtime（ping / build-image / has-image / launch / list）
 packages/core/src/
   index.ts                          对外 barrel 导出（含 DaemonManager 装配根）
   config/
@@ -81,7 +89,7 @@ monorepo：`apps/*` 可执行，`packages/*` 被 `@my/*` 引用。
 
 ## CLI 约定（apps/cli）
 
-- 命令注册全在 `apps/cli/src/main.ts`
+- 命令按组拆在 `apps/cli/src/commands/*.ts`，每个文件导出 `registerXxxCommands(program)`；`main.ts` 只装配（见 docs/lessons/21-cli-refactor.md）
 - action 第一行：`const config = await ConfigManager.getInstance()`
 - 失败：`console.error(\`✗ <原因>\`)` + `process.exit(1)`
 - 成功：`console.log(\`✓ <动作>: <id>\`)`

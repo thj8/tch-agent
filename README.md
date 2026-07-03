@@ -52,7 +52,10 @@ bun build --compile --target=bun-darwin-arm64 ./apps/cli/src/main.ts --outfile b
 
 ```
 apps/cli/              CLI 入口（commander）
-  src/main.ts
+  src/main.ts          入口：装配 program + 挂命令组 + parseAsync（约 40 行）
+  src/utils.ts         formatError / pathExists
+  src/event-summary.ts AgentSession 事件 → 一行摘要
+  src/commands/        命令组（misc / config / solver / runtime，各导出 registerXxxCommands）
 packages/core/         核心库（@my/core）
   src/index.ts         对外导出（含 DaemonManager 装配根）
   src/config/          配置层

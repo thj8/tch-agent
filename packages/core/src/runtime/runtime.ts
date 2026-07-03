@@ -231,24 +231,27 @@ export class RuntimeManager {
      * 拉起一个 Solver 容器，并完成 init 握手。
      *
      * 流程：
-     *   1. 生成 solverId
-     *   2. mkdir workspace / session / base
-     *   3. 决定 binary injection
-     *   4. 拼 docker run 命令
-     *   5. Bun.spawn 拉起容器，拿到 stdin/stdout pipe
-     *   6. 启动 readStream（拿到 initReady Promise）
-     *   7. 写 SolverInitPayload 到容器 stdin
-     *   8. 等 init success（最多 30 秒）
+     *   1. 生成 solverId + 登记元数据
+     *   2. 在宿主建 base / session / workspace 三个目录
+     *   3. 决定 binary 注入方式（resolveSolverInjection）
+     *   4. 组装 volume 挂载（binds）+ 环境变量
+     *   5. 拼 docker run 命令行
+     *   6. Bun.spawn 拉起容器，拿到 stdin/stdout pipe
+     *   7. 挂 readStream（拿 initReady）→ 写 SolverInitPayload 到容器 stdin
+     *   8. 等 init success（最多 30s 超时）
      *
      * @param promptName 用哪个 prompt
      * @param task 初始 task 文本
-     * @param solverEnv 注入容器的环境变量
+     * @param solverEnv 注入容器的环境变量（API key / challenge id 等）
      */
     async launch(
         promptName: string,
         task: string,
         solverEnv: Record<string, string> = {},
     ): Promise<SolverInstance> {
+        // ── 步骤 1：生成 solverId + 登记元数据 ──
+        // uuid 前 8 位当 id，短且好认；容器名跟着 id 走（tch-solver-<id>）。
+        // 先把 solver 记进 map——哪怕后面拉容器失败，调用方也能用 list()/get() 查到这次。
         const id = crypto.randomUUID().slice(0, 8)
         const name = `tch-solver-${id}`
 
@@ -265,6 +268,10 @@ export class RuntimeManager {
         this.solvers.set(id, solver)
         this.solverEnvs.set(id, solverEnv)
 
+        // ── 步骤 2：在宿主侧建三个目录 ──
+        //   base      ~/.tinyfat/solvers/<id>/          session 元数据 + binary 注入入口
+        //   session   .../session/                      对话历史落盘（SDK SessionManager 写这里）
+        //   workspace .../workspace/                    agent 工作目录，挂进容器当 /root/workspace
         const baseDir = solverDir(id)
         const sessionDir = solverSessionDir(id)
         const workspaceDir = solverWorkspaceDir(id)
@@ -275,16 +282,18 @@ export class RuntimeManager {
         await mkdir(sessionDir, { recursive: true })
         await mkdir(workspaceDir, { recursive: true })
 
+        // ── 步骤 3：决定 binary 注入方式 ──
+        // 生产环境挂编译好的 tinyfat-linux-x64；开发模式会按需重新编译。
+        // 返回 { binds, cmd }：binds 是要 -v 挂的路径，cmd 是容器启动后执行的命令。
         const injection = await resolveSolverInjection()
 
-        // 组装 binds
-        // "Binds": [
-        //     "/home/sugar/.tinyfat:/root/.tinyfat",
-        //     "/home/sugar/.tinyfat/solvers/e612d186:/runtime",
-        //     "/home/sugar/.tinyfat/solvers/e612d186/workspace:/root/workspace",
-        //     "/home/sugar/.tinyfat/runtime/self/tinyfat-linux-x64:/opt/tinyfat/tinyfat:ro",
-        //     "/home/sugar/.tinyfat/runtime/self/package.json:/opt/tinyfat/package.json:ro"
-        // ],
+        // ── 步骤 4：组装 volume 挂载（binds）+ 环境变量 ──
+        // binds 最终长这样（宿主路径 → 容器内路径）：
+        //   ~/.tinyfat                     → /root/.tinyfat        读配置 / auth / prompts
+        //   solvers/<id>/                  → /runtime              session 元数据 + 注入入口
+        //   solvers/<id>/workspace         → /root/workspace       agent 工作目录
+        //   runtime/self/tinyfat-linux-x64 → /opt/tinyfat/tinyfat:ro    solver 二进制（只读）
+        //   runtime/self/package.json      → /opt/tinyfat/package.json:ro
         const binds = [
             ...(this.config.binds ?? []),
             `${TCH_AGENT_HOME_DIR}:/root/.tinyfat`,
@@ -293,6 +302,7 @@ export class RuntimeManager {
             ...injection.binds,
         ]
 
+        // 环境变量两部分拼一起：全局 config.env（所有 solver 共享）+ 本次 solverEnv（专属）。
         const envPairs: string[] = []
         for (const [k, v] of Object.entries(this.config.env ?? {})) {
             envPairs.push(`${k}=${v}`)
@@ -301,6 +311,12 @@ export class RuntimeManager {
             envPairs.push(`${k}=${v}`)
         }
 
+        // ── 步骤 5：拼 docker run 命令行 ──
+        // -i          保持 stdin 打开（靠它跟容器做 JSONL 通信）
+        // --platform  强制 linux/amd64（容器内跑的是编译好的 x64 binary）
+        // --network   默认 host，agent 直接用宿主网络访问外网 / 本地服务最省事
+        // -w          容器工作目录 = workspace
+        // --rm        退出后自动删容器
         const args: string[] = [
             "docker", "run",
             "-i",
@@ -322,6 +338,8 @@ export class RuntimeManager {
         console.log(`[runtime] launching solver ${id}...`)
         console.log(`[runtime] cmd: ${args.join(" ")}`)
 
+        // ── 步骤 6：拉起容器，拿三个 pipe ──
+        // stdin 发 RPC 命令、stdout 收事件流、stderr 看容器日志。
         const proc = Bun.spawn(args, {
             stdin: "pipe",
             stdout: "pipe",
@@ -331,8 +349,14 @@ export class RuntimeManager {
         this.procs.set(id, proc)
         solver.status = "running"
 
+        // ── 步骤 7：先挂 stdout reader，再发 init ──
+        // 顺序不能反：readStream 会监听 stdout，容器回的第一行就是 init 响应。
+        // 必须先挂好 reader 再写 payload，否则第一行会被错过，initReady 永远不 resolve。
+        // readStream 立刻返回 initReady（此刻 pending），resolve 时机见步骤 8。
         const initReady = this.readStream(id, proc)
 
+        // 写第一行 JSONL = SolverInitPayload。容器内的 runSolverRpc 只读 stdin 第一行
+        // 作为 init 载荷，靠它建 AgentSession。
         const initPayload: SolverInitPayload = {
             solverId: id,
             promptName,
@@ -341,6 +365,9 @@ export class RuntimeManager {
         }
         proc.stdin.write(JSON.stringify(initPayload) + "\n")
 
+        // ── 步骤 8：等握手结果（init success / 30s 超时，二选一）──
+        // 容器起来 + session 建好 → 容器回 {command:"init", success:true} → readStream 里 resolveInit。
+        // 30s 还没回 → 认为容器没起来或卡住了，超时抛错给调用方。
         await Promise.race([
             initReady,
             new Promise<never>((_, reject) =>
@@ -440,11 +467,11 @@ export class RuntimeManager {
 
     /**
      * 读容器的 stdout，做三件事：
-     *   1. 等第一条 init 响应（用 external-promise 把 initReady 暴露给 launch() await）
+     *   1. 等第一条 init 响应（用 external-promise 模式，让 launch() 能 await initReady）
      *   2. 拦截 host_bridge_request，转交 handleHostBridgeRequest（不计入事件流）
      *   3. 其余每行作为 AgentSessionEvent 转发给 event handler
      *
-     * 返回的 initReady 由 launch() 配合 30s 超时 await。
+     * 返回的 initReady 在 launch() 里跟 30s 超时赛跑。
      */
     private readStream(
         solverId: string,
@@ -452,8 +479,8 @@ export class RuntimeManager {
     ): Promise<void> {
         const decoder = new TextDecoder()
 
-        // external-promise 模式：把 resolve/reject 提到外面，这样下面的 stdout 读取循环
-        // 能在收到 init 响应时控制这个 Promise 的状态，launch() 才能对它 await。
+        // external-promise 模式：把 resolve/reject 提取到外层作用域，下面的 stdout 读取
+        // 循环收到 init 响应时就能直接调它们，launch() 才好 await 这个 Promise。
         let resolveInit!: () => void
         let rejectInit!: (err: Error) => void
         const initReady = new Promise<void>((res, rej) => {
@@ -463,8 +490,8 @@ export class RuntimeManager {
 
         let initResolved = false
 
-        // stdout 读取循环：流是 chunk 流，一个 chunk 可能含半行 / 多行，
-        // 按 "\n" 切 buffer 逐行处理。
+        // stdout 读取循环：stdout 是分块到达的，一个 chunk 可能只有半行、也可能好几行，
+        // 所以攒在 buffer 里按 "\n" 切成一行行处理。
         ;(async () => {
             const reader = proc.stdout.getReader()
             let buffer = ""
@@ -491,7 +518,7 @@ export class RuntimeManager {
                         }
 
                         // ── 职责 1：握手。第一条响应必须是 init，按 success 决定 resolve/reject。
-                        //    initResolved 守卫保证只处理一次，之后这层 if 不再进入。
+                        //    initResolved 守卫保证只处理一次，之后这个分支就不再走了。
                         if (!initResolved) {
                             const response = event as {
                                 type?: string
@@ -511,7 +538,7 @@ export class RuntimeManager {
                         }
 
                         // ── 职责 2：host bridge。容器反查宿主的请求不走事件流，单独交给
-                        //    handleHostBridgeRequest（其结果会以 host_bridge_response 推回容器）。
+                        //    handleHostBridgeRequest（结果会以 host_bridge_response 推回容器）。
                         const maybeBridgeReq = event as { type?: string }
                         if (maybeBridgeReq.type === "host_bridge_request") {
                             void this.handleHostBridgeRequest(solverId, event as HostBridgeRequestEvent)

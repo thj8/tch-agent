@@ -57,7 +57,7 @@ function shouldForwardEvent(event: AgentSessionEvent): boolean {
  *   3. 常驻：订阅事件流 → 触发首轮 prompt → 进入命令循环
  */
 export async function runSolverRpc(): Promise<never> {
-    // ── 阶段 1：Bootstrap —— 只消费 stdin 第一行作为 init 载荷 ──
+    // ── 阶段 1：Bootstrap —— 只读 stdin 第一行当 init 载荷 ──
     // 抓到第一行就立刻 detach：只读一行，把剩下的 stdin 留给下面的命令循环 reader。
     // 若宿主还没发 init 就关了 stdin（异常断连），reject 退出。
     const raw = await new Promise<string>((resolve, reject) => {
@@ -150,7 +150,7 @@ async function handleInputLine(session: AgentSession, line: string): Promise<voi
 }
 
 /**
- * 命令分发器：把一条 RpcCommand 翻译成对 AgentSession 的调用，返回同步应答 RpcResponse。
+ * 命令分发器：把一条 RpcCommand 转成对 AgentSession 的调用，返回同步应答 RpcResponse。
  *
  * 两类命令的应答语义不同：
  *   - 同步命令（get_state / set_model / bash …）：执行完才回，data 里带结果。
