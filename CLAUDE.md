@@ -21,6 +21,7 @@ apps/cli/src/
     config.ts                      config（api-keys / providers / model-prefs / prompts）
     solver.ts                      solver（run / rpc）
     runtime.ts                     runtime（ping / build-image / has-image / launch / list）
+    challenge.ts                   challenge（create / list / show / append-attempt / list-attempts）
 packages/core/src/
   index.ts                          对外 barrel 导出（含 DaemonManager 装配根）
   config/
@@ -33,6 +34,11 @@ packages/core/src/
     session.ts                      createSolverSession（装配 AgentSession）
     cli.ts                          runSolverCli（事件流 → stdout）
     rpc/                            Solver ↔ Host RPC 协议（init 握手 + host bridge）
+  challenge/
+    env.ts                          challenge 模式注入容器的环境变量名常量
+    host-bridge-*.ts                Solver ↔ Host bridge（client / handler / types）
+    store.ts                        Challenge 数据存储层（元数据 + attempts/submissions 日志，原子写 + mkdir 文件锁）
+    store.test.ts                   bun:test 单元测试
   runtime/runtime.ts                RuntimeManager（Docker 镜像 + 容器生命周期）
 packages/ui-web/src/
   server.ts                         Bun.serve + REST API + Tailwind sidecar

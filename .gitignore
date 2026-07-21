@@ -26,6 +26,7 @@ prompts.md
 
 # 日志
 *.log
+*.jsonl
 
 # 临时文件
 *.swp

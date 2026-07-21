@@ -55,7 +55,7 @@ apps/cli/              CLI 入口（commander）
   src/main.ts          入口：装配 program + 挂命令组 + parseAsync（约 40 行）
   src/utils.ts         formatError / pathExists
   src/event-summary.ts AgentSession 事件 → 一行摘要
-  src/commands/        命令组（misc / config / solver / runtime，各导出 registerXxxCommands）
+  src/commands/        命令组（misc / config / solver / runtime / challenge，各导出 registerXxxCommands）
 packages/core/         核心库（@my/core）
   src/index.ts         对外导出（含 DaemonManager 装配根）
   src/config/          配置层
@@ -70,6 +70,8 @@ packages/core/         核心库（@my/core）
   src/runtime/         Docker runtime
     runtime.ts         RuntimeManager（构建镜像 / 拉起容器 / RPC）
   src/solver/rpc/      Solver ↔ Host RPC 协议（init 握手 + host bridge）
+  src/challenge/       Challenge 数据存储层 + challenge 模式 env / host-bridge
+    store.ts           元数据 + attempts/submissions 日志（原子写 + mkdir 文件锁）
 packages/ui-web/       Web UI（@my/ui-web）
   src/server.ts        Bun.serve + REST API + Tailwind sidecar
   src/index.html       前端入口
