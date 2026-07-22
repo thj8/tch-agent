@@ -1,10 +1,12 @@
 
 export const PACKAGE_NAME = "@my/core"
+import { ChallengeManager } from "./challenge/manager"
+import { createChallengeHostBridgeHandler } from "./challenge/host-bridge-challenge-handler"
 import { ConfigManager } from "./config/index"
 import { RuntimeManager } from "./runtime/runtime"
 
 export { ConfigManager, TCH_AGENT_HOME_DIR, DEFAULT_CONFIG_DIR } from "./config/index"
-export type { HostSettings, HostRuntimeSettings } from "./config/types"
+export type { HostSettings, HostRuntimeSettings, HostChallengeSettings } from "./config/types"
 export type { ProviderPrefEntry, ModelConfigEntry } from "./config/providers/types"
 export * from "./config/prompts/index"
 export { runSolverCli, runSolverRpc } from "./solver/cli"
@@ -12,6 +14,8 @@ export type { RunSolverOptions } from "./solver/cli"
 export { createSolverSession } from "./solver/session"
 export type { SolverSession } from "./solver/session"
 export * from "./challenge/store"
+export * from "./challenge/api-client"
+export * from "./challenge/manager"
 export type { SolverInitPayload, RpcCommand, RpcResponse } from "./solver/rpc/rpc-types"
 export { RuntimeManager } from "./runtime/runtime"
 export type { SolverInstance, ContainerConfig, SolverEventHandler } from "./runtime/types"
@@ -20,7 +24,10 @@ export { SOLVERS_DIR, ARCHIVE_SOLVERS_DIR, solverDir, solverSessionDir, solverWo
 /**
  * DaemonManager：web 进程的"装配根"。
  *
- * 把 ConfigManager + RuntimeManager 装配在一起，让它们相互持有引用。
+ * 把 ConfigManager + ChallengeManager + RuntimeManager 装配在一起，让它们相互持有引用：
+ *   - ChallengeManager 持有 runtime（收尾时停活跃 solver）
+ *   - RuntimeManager 收 challenge host bridge handler（容器内 solver 调 challenge_* 时
+ *     经 host bridge 转给 ChallengeManager）
  *
  * 单例模式，整个 web 进程共用一份。
  */
@@ -28,10 +35,12 @@ export class DaemonManager {
     private static instance: Promise<DaemonManager> | undefined
 
     readonly config: ConfigManager
+    readonly challenge: ChallengeManager
     readonly runtime: RuntimeManager
 
-    private constructor(config: ConfigManager, runtime: RuntimeManager) {
+    private constructor(config: ConfigManager, challenge: ChallengeManager, runtime: RuntimeManager) {
         this.config = config
+        this.challenge = challenge
         this.runtime = runtime
     }
 
@@ -40,9 +49,11 @@ export class DaemonManager {
 
         const created = (async () => {
             const config = await ConfigManager.getInstance()
-            const runtime = new RuntimeManager(config)
+            const challenge = new ChallengeManager(config)
+            const runtime = new RuntimeManager(config, [createChallengeHostBridgeHandler(challenge)])
+            challenge.attachRuntime(runtime)
             await runtime.init()
-            return new DaemonManager(config, runtime)
+            return new DaemonManager(config, challenge, runtime)
         })()
 
         this.instance = created.catch((error) => {

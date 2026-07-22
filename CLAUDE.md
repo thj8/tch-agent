@@ -21,14 +21,18 @@ apps/cli/src/
     config.ts                      config（api-keys / providers / model-prefs / prompts）
     solver.ts                      solver（run / rpc）
     runtime.ts                     runtime（ping / build-image / has-image / launch / list）
-    challenge.ts                   challenge（create / list / show / append-attempt / list-attempts）
+    challenge.ts                   challenge（create / list / show / sync / append-attempt / list-attempts）
+    settings.ts                    settings（show / set —— host-settings 的 runtime / challenge）
 packages/core/src/
-  index.ts                          对外 barrel 导出（含 DaemonManager 装配根）
+  index.ts                          对外 barrel 导出（含 DaemonManager 装配根：config + challenge + runtime）
   config/
-    index.ts                        ConfigManager 单例 + Provider/Model 偏好 CRUD + resolvePromptSession
-    types.ts                        AddResult
+    index.ts                        ConfigManager 单例 + Provider/Model 偏好 CRUD + host-settings + resolvePromptSession（注册 host bridge / challenge 工具）
+    types.ts                        AddResult / HostSettings / HostRuntimeSettings / HostChallengeSettings
     providers/types.ts              ProviderPrefEntry / ModelConfigEntry
     prompts/index.ts                Prompt 文件加载（YAML frontmatter + MD）
+    tools/                          LLM 工具（defineTool），经 host bridge 转宿主执行
+      host-bridge-tools.ts          ping / get_env / get_api_key
+      challenge-tools.ts            challenge_get_state / submit_flag / get_hint
     config-manager.test.ts          bun:test 单元测试
   solver/
     session.ts                      createSolverSession（装配 AgentSession）
@@ -36,10 +40,14 @@ packages/core/src/
     rpc/                            Solver ↔ Host RPC 协议（init 握手 + host bridge）
   challenge/
     env.ts                          challenge 模式注入容器的环境变量名常量
-    host-bridge-*.ts                Solver ↔ Host bridge（client / handler / types）
+    host-bridge-*.ts                Solver ↔ Host bridge（client / handler / types / challenge-handler）
     store.ts                        Challenge 数据存储层（元数据 + attempts/submissions 日志，原子写 + mkdir 文件锁）
     store.test.ts                   bun:test 单元测试
-  runtime/runtime.ts                RuntimeManager（Docker 镜像 + 容器生命周期）
+    api-client.ts                   平台 REST 客户端（信封 / Agent-Token / 3 RPS 限流 / 2.5s 超时 / mock 模式）
+    api-client.test.ts              bun:test 单元测试
+    manager.ts                      ChallengeManager 控制平面（API + store + 业务逻辑 + mock 平台行为）
+    manager.test.ts                 bun:test 单元测试
+  runtime/runtime.ts                RuntimeManager（Docker 镜像 + 容器生命周期，收 host bridge handler 链）
 packages/ui-web/src/
   server.ts                         Bun.serve + REST API + Tailwind sidecar
   app.tsx                           sidebar + hash 路由
@@ -60,10 +68,20 @@ monorepo：`apps/*` 可执行，`packages/*` 被 `@my/*` 引用。
 - **ID**：`generateId(prefix)` → `<prefix>_<6位hex>`，如 `prov_a3f9b2`
 - **Prompt**：YAML frontmatter + MD；`savePrompt` 自动给 skills 补 `read` 工具
 - **resolvePromptSession**：Prompt → `CreateAgentSessionOptions`（含 model 解析 + tools 白名单 + DefaultResourceLoader）
+- **Host settings**：`getHostSettings` / `setHostSettings`（浅合并 `runtime` + `challenge` 两节，走 `writeJsonAtomic`，存 `host-settings.json`）；`isChallengeMockMode()` 读 `challenge.mockEnabled`
+
+## Challenge 控制平面（packages/core/src/challenge）
+
+- **三层**：`api-client.ts`（平台 REST + mock）→ `manager.ts`（控制平面：协调 API + store + 业务）→ `store.ts`（本地落盘）
+- **mock 模式**：`challenge.mockEnabled === true` 时，`ChallengeManager.getApi()` 用 `createMock` 在本地 store 上模拟整个平台（list / start / stop / submit / hint），离线可跑
+- **真 API 模式**：需配 `challenge.apiBaseUrl` + `challenge.agentToken`，缺则抛 `Challenge API not configured`
+- **完成收尾**：`submitFlag` 检测到完成 → 自动 `finishChallenge`（停实例 + 停该题活跃 solver）；返回值在收尾后重读，保证 `instance_status` 最新（不报 stale running）
+- **Host bridge**：`createChallengeHostBridgeHandler` 暴露 `challenge_get_state / submit_flag / get_hint / is_completed` 给容器内 solver；前提是容器注入了 `TCH_CHALLENGE_ID`（常量在 `env.ts`）
+- **装配**：`DaemonManager` 把 handler 注入 `RuntimeManager` 并 `challenge.attachRuntime(runtime)`；CLI 的 `challenge sync` 是纯数据操作，直接用 `ConfigManager + ChallengeManager`，**不走 DaemonManager**（避免触发 `runtime.init()` build 镜像，保证 mock 模式离线可跑）
 
 ## Web UI（packages/ui-web）
 
-- **装配根**：`DaemonManager.getInstance()` 统一持有 `config` + `runtime`，单例
+- **装配根**：`DaemonManager.getInstance()` 统一持有 `config` + `challenge` + `runtime`，单例
 - **入口**：`startWeb({ hostname, port })`，被 `tinyfat web` 调用
 - **路由**：`Bun.serve routes` 声明式，按 method 分发；REST API 全在 `/api/config/*` 和 `/api/runtime/*`
 - **Tailwind sidecar**：Bun 1.3.14 自带 Tailwind v4 集成有 bug（[issue #19021](https://github.com/oven-sh/bun/issues/19021)），手动 spawn `@tailwindcss/cli` 构建到 `dist/tailwind.css`，再用 `/tailwind.css` 路由 serve

@@ -9,6 +9,8 @@
  */
 import type { Command } from "commander"
 import {
+  ChallengeManager,
+  ConfigManager,
   DEFAULT_CHALLENGE_DIR,
   appendChallengeAttemptLog,
   listChallengeAttemptLogs,
@@ -78,6 +80,27 @@ export function registerChallengeCommands(program: Command): void {
         console.log(
           `${c.id}\t\t${c.title.slice(0, 20).padEnd(20)}\t${c.flag_got_count}/${c.flag_count}`,
         )
+      }
+    })
+
+  challengeCmd
+    .command("sync")
+    .description("Sync challenges from platform (mock store when mockEnabled) to local")
+    .action(async () => {
+      // 直接用 ConfigManager + ChallengeManager，不走 DaemonManager——
+      // DaemonManager.getInstance() 会触发 runtime.init()（build Docker 镜像），
+      // 而 sync 是纯数据操作（尤其 mock 模式要离线可跑），不该依赖 Docker。
+      try {
+        const config = await ConfigManager.getInstance()
+        const mgr = new ChallengeManager(config)
+        const { remote, local } = await mgr.listChallenges()
+        console.log(
+          `✓ Synced: ${remote.solved_challenges}/${remote.total_challenges} solved (level ${remote.current_level})`,
+        )
+        console.log(`  local records: ${local.length}`)
+      } catch (error) {
+        console.error(`✗ ${error instanceof Error ? error.message : String(error)}`)
+        process.exit(1)
       }
     })
 

@@ -76,19 +76,20 @@ import type {
     ChallengeApiChallenge,
 } from "./api-client"
 import {
-    computeChallengeCompleted,
-    saveChallengeRecord,
-    readChallengeRecord,
-    listChallengeRecords,
     appendChallengeAttemptLog,
     appendChallengeSubmissionLog,
-    ensureChallengeStoreBaseDir,
+    computeChallengeCompleted,
     DEFAULT_CHALLENGE_DIR,
+    ensureChallengeStoreBaseDir,
+    listChallengeAttemptLogs,
+    listChallengeRecords,
+    readChallengeRecord,
+    saveChallengeRecord,
 } from "./store"
 import type {
+    ChallengeAttemptLogRecord,
     ChallengeInfoRecord,
     ChallengeRecord,
-    ChallengeSubmissionLogRecord,
 } from "./store"
 import type { ConfigManager } from "../config/index"
 import type { RuntimeManager } from "../runtime/runtime"
@@ -122,12 +123,17 @@ export interface ChallengeActionResult<T> {
  */
 export class ChallengeManager {
     private readonly config: ConfigManager
+    private readonly rootDir: string
     private api: ChallengeApiClient | undefined
-    private rootDir: string | undefined
     private runtime: RuntimeManager | undefined
 
-    constructor(config: ConfigManager) {
+    /**
+     * @param config ConfigManager
+     * @param rootDir challenge 数据根目录（默认 ~/.tinyfat/challenge；测试可注入 tmp 目录）
+     */
+    constructor(config: ConfigManager, rootDir: string = DEFAULT_CHALLENGE_DIR) {
         this.config = config
+        this.rootDir = rootDir
     }
 
     /** 注入 RuntimeManager（DaemonManager 装配时调用） */
@@ -139,7 +145,7 @@ export class ChallengeManager {
         return this.runtime
     }
 
-    /** 配置变更时清缓存 */
+    /** 配置变更时清 API 缓存 */
     reloadFromConfig(): void {
         this.api = undefined
     }
@@ -147,16 +153,8 @@ export class ChallengeManager {
     // ── 内部工具 ────────────────────────────────────────
 
     private async getRootDir(): Promise<string> {
-        if (this.rootDir) return this.rootDir
-        await ensureChallengeStoreBaseDir(DEFAULT_CHALLENGE_DIR)
-        this.rootDir = DEFAULT_CHALLENGE_DIR
+        await ensureChallengeStoreBaseDir(this.rootDir)
         return this.rootDir
-    }
-
-    /** 是否启用 mock 模式 */
-    private async isMockMode(): Promise<boolean> {
-        const settings = await this.config.getHostSettings()
-        return settings.challenge.mockEnabled === true
     }
 
     /**
@@ -304,11 +302,13 @@ export class ChallengeManager {
         // 同步本地状态
         const rootDir = await this.getRootDir()
         const challenge = await readChallengeRecord(rootDir, challengeId)
-        if (challenge) {
-            const entrypoint = Array.isArray(remote) ? remote : challenge.entrypoint
+        // 平台给了入口数组 → 实例在跑，落盘 running + entrypoint。
+        // 平台返回 { already_completed: true }（或其它非数组）→ 不改本地状态，
+        // 否则把已完成题误标 running。
+        if (challenge && Array.isArray(remote)) {
             await saveChallengeRecord(
                 rootDir,
-                { ...challenge, instance_status: "running", entrypoint },
+                { ...challenge, instance_status: "running", entrypoint: remote },
                 "challenge:start",
             )
         }
@@ -387,16 +387,19 @@ export class ChallengeManager {
             writeup: meta.writeup,
         })
 
-        const updated = await readChallengeRecord(rootDir, challengeId)
-        const isCompleted = computeChallengeCompleted(updated)
+        const beforeFinish = await readChallengeRecord(rootDir, challengeId)
+        const isCompleted = computeChallengeCompleted(beforeFinish)
 
-        // 若完成，触发 finishChallenge
+        // 若完成，触发 finishChallenge（失败只打日志，不影响 submit 结果）
         if (isCompleted) {
             await this.finishChallenge(challengeId).catch((error) => {
                 console.error("[challenge] finishChallenge error:", error)
             })
         }
 
+        // finishChallenge 会停实例（instance_status → stopped），完成分支必须重读一次，
+        // 否则返回的 challenge 还是收尾前的快照（已 start 的题会误报 running）。
+        const updated = await readChallengeRecord(rootDir, challengeId)
         return { remote, challenge: updated, is_completed: isCompleted }
     }
 
@@ -468,10 +471,8 @@ export class ChallengeManager {
     }
 
     /** 列出 attempts */
-    async listAttemptLogs(challengeId: string): Promise<ChallengeSubmissionLogRecord[]> {
-        // 简化：复用 store 的函数
+    async listAttemptLogs(challengeId: string): Promise<ChallengeAttemptLogRecord[]> {
         const rootDir = await this.getRootDir()
-        const { listChallengeAttemptLogs } = await import("./store")
         return listChallengeAttemptLogs(rootDir, challengeId)
     }
 }
@@ -542,26 +543,30 @@ export type HostBridgeAction =
 新建 `packages/core/src/challenge/host-bridge-challenge-handler.ts`：
 
 ```typescript
-import type { ChallengeManager } from "./manager"
-import type { ChallengeInfoRecord } from "./store"
+import { CHALLENGE_ENV_CHALLENGE_ID } from "./env"
 import type {
     HostBridgeHandleContext,
     HostBridgeHandleResult,
     HostBridgeHandler,
 } from "./host-bridge-handler"
+import type { ChallengeManager } from "./manager"
 
 /**
  * 创建 challenge 相关的 host bridge handler。
  *
- * 让容器内 solver 能调 challenge_get_state / challenge_submit_flag 等。
+ * 让容器内 solver 能调 challenge_get_state / challenge_submit_flag /
+ * challenge_get_hint / challenge_is_completed。
+ *
+ * 前提：solver 容器必须注入了 TCH_CHALLENGE_ID 环境变量（否则一律 handled:false，
+ * 让 handler 链继续往后试别的 handler）。环境变量名集中在 env.ts 的常量里。
  */
 export function createChallengeHostBridgeHandler(
     challengeManager: ChallengeManager,
 ): HostBridgeHandler {
     return {
         async handle(ctx: HostBridgeHandleContext): Promise<HostBridgeHandleResult> {
-            // 必须有 TCH_CHALLENGE_ID 环境变量
-            const challengeId = ctx.getSolverEnvValue?.("TCH_CHALLENGE_ID")
+            // 必须有 TCH_CHALLENGE_ID 环境变量（常量定义在 env.ts）
+            const challengeId = ctx.getSolverEnvValue?.(CHALLENGE_ENV_CHALLENGE_ID)
             if (!challengeId) {
                 return { handled: false }
             }
@@ -673,8 +678,13 @@ export class DaemonManager {
 
 ```typescript
 import { defineTool } from "@mariozechner/pi-coding-agent"
-import { Type } from "@sinclair/typebox"
-import { requestHostBridge } from "../../../challenge/host-bridge-client"
+import { Type } from "typebox"
+import { requestHostBridge } from "../../challenge/host-bridge-client"
+
+// 注意：
+//   - Type 从 "typebox" 导入（项目用的是 typebox，不是 @sinclair/typebox）。
+//   - 每个 execute 的返回都要带 details: undefined，和 host-bridge-tools.ts 的
+//     返回形状保持一致（pi-coding-agent 的 ToolResult 要求 content + details）。
 
 export const challengeGetStateTool = defineTool({
     name: "challenge_get_state",
@@ -691,6 +701,7 @@ export const challengeGetStateTool = defineTool({
             content: [
                 { type: "text", text: JSON.stringify(result, null, 2) },
             ],
+            details: undefined,
         }
     },
 })
@@ -722,6 +733,7 @@ export const challengeSubmitFlagTool = defineTool({
                     text: `submitted flag=${params.flag}: ${result.correct ? "correct" : "incorrect"} (${result.flag_got_count}/${result.flag_count}${result.is_completed ? ", completed" : ""})`,
                 },
             ],
+            details: undefined,
         }
     },
 })
@@ -740,6 +752,7 @@ export const challengeGetHintTool = defineTool({
             content: [
                 { type: "text", text: result.hint_content ?? "(no hint available)" },
             ],
+            details: undefined,
         }
     },
 })
@@ -765,25 +778,32 @@ const opts: CreateAgentSessionOptions = {
 
 ---
 
-## 第三步：CLI 命令
+## 第三步：CLI 命令（modular）
 
-先把 `DaemonManager` 加到 `apps/cli/src/main.ts` 顶部的 `@my/core` import：
-
-```typescript
-import { ConfigManager, DaemonManager, /* ...其他 */ } from "@my/core"
-```
-
-然后给 challenge 命令组加 sync：
+`challenge sync` 加到 `apps/cli/src/commands/challenge.ts`（lesson 21 的命令组文件）。
+直接用 `ConfigManager` + `ChallengeManager`，**不走 DaemonManager**——
+`DaemonManager.getInstance()` 会触发 `runtime.init()`（build Docker 镜像），而 sync 是
+纯数据操作（mock 模式更要离线可跑），不该依赖 Docker。
 
 ```typescript
+import { ChallengeManager, ConfigManager, /* …其它 store 函数 */ } from "@my/core"
+
 challengeCmd
     .command("sync")
-    .description("Sync challenges from API (or mock)")
+    .description("Sync challenges from platform (mock store when mockEnabled) to local")
     .action(async () => {
-        const daemon = await DaemonManager.getInstance()
-        const result = await daemon.challenge.listChallenges()
-        console.log(`Remote: ${result.remote.total_challenges} challenges`)
-        console.log(`Local: ${result.local.length} records`)
+        try {
+            const config = await ConfigManager.getInstance()
+            const mgr = new ChallengeManager(config)
+            const { remote, local } = await mgr.listChallenges()
+            console.log(
+                `✓ Synced: ${remote.solved_challenges}/${remote.total_challenges} solved (level ${remote.current_level})`,
+            )
+            console.log(`  local records: ${local.length}`)
+        } catch (error) {
+            console.error(`✗ ${error instanceof Error ? error.message : String(error)}`)
+            process.exit(1)
+        }
     })
 ```
 
@@ -812,23 +832,27 @@ cat ~/.tinyfat/challenge/test-1/challenge.json | jq '. + {flags: ["flag{test}"]}
 bun run apps/cli/src/main.ts challenge sync
 ```
 
-**预期**：
+**预期**（mock 模式从本地 store 读）：
 
 ```
-Remote: 1 challenges
-Local: 1 records
+✓ Synced: 0/1 solved (level 1)
+  local records: 1
 ```
 
 ### 4.3 启动 + 提交
 
-写个测试脚本：
+写个一次性脚本验证 start / submit / 完成收尾。**脚本要放在 workspace 成员目录里**
+（这里放 `packages/core/src/`），并用相对 import —— 放在仓库根或 `/tmp` 时 `@my/core`
+解析不到（Bun 只对 workspace 成员内的文件做包解析，见 lesson 01）。同样的流程也被
+`packages/core/src/challenge/manager.test.ts` 单元测试覆盖（`bun test`）。
 
 ```bash
-cat > /tmp/test-mgr.ts << 'EOF'
-import { DaemonManager } from "@my/core"
+cat > packages/core/src/_verify-mgr.ts << 'EOF'
+import { ChallengeManager } from "./challenge/manager"
+import { ConfigManager } from "./config/index"
 
-const daemon = await DaemonManager.getInstance()
-const mgr = daemon.challenge
+const config = await ConfigManager.getInstance()
+const mgr = new ChallengeManager(config)
 
 console.log("Starting...")
 await mgr.startChallenge("test-1")
@@ -840,22 +864,24 @@ console.log(`  correct: ${wrong.remote.correct}, got ${wrong.remote.flag_got_cou
 console.log("Submitting correct flag...")
 const correct = await mgr.submitFlag("test-1", "flag{test}")
 console.log(`  correct: ${correct.remote.correct}, got ${correct.remote.flag_got_count}/${correct.remote.flag_count}`)
-console.log(`  is_completed: ${correct.is_completed}`)
+console.log(`  is_completed: ${correct.is_completed}, instance: ${correct.challenge?.instance_status}`)
 
 console.log("Done")
 EOF
-bun run /tmp/test-mgr.ts
+bun packages/core/src/_verify-mgr.ts
+rm packages/core/src/_verify-mgr.ts
 ```
 
-**预期**：
+**预期**（完成会自动触发 finishChallenge 停实例）：
 
 ```
 Starting...
 Submitting wrong flag...
   correct: false, got 0/1
 Submitting correct flag...
+[challenge] finishing test-1...
   correct: true, got 1/1
-  is_completed: true
+  is_completed: true, instance: stopped
 Done
 ```
 
@@ -897,9 +923,12 @@ mv /tmp/c.json ~/.tinyfat/challenge/test-1/challenge.json
 
 ### 问题 3：finishChallenge 没停 solver
 
-**原因**：可能 runtime 没注入 challenge（attachRuntime 没调）。
+**原因**：ChallengeManager 没注入 runtime（`attachRuntime` 没调），`this.runtime` 是 undefined，
+finishChallenge 只能停实例、停不了活跃 solver。
 
-**解决**：确保用 `DaemonManager.getInstance()` 拿 mgr（它会自动 attach）。
+**解决**：走 `DaemonManager.getInstance().challenge`（web daemon / solver-launch 路径，DaemonManager
+装配时会自动 `attachRuntime`）。注意：CLI 的 `challenge sync` 和离线验证脚本直接
+`new ChallengeManager(config)` 是故意的（纯数据操作，不接 runtime）——这些路径下本就没有活跃 solver 要停。
 
 ### 问题 4：host bridge 找不到 challengeId
 
@@ -924,14 +953,19 @@ tinyfat runtime launch --prompt SOLVER -e TCH_CHALLENGE_ID=test-1 "..."
 - 加 challenge 工具让 LLM 能查 / 提交
 - DaemonManager 装配升级
 
-📦 **新增文件**：
+📦 **新增 / 修改文件**：
 
 ```
 packages/core/src/challenge/
-├── manager.ts                          ← ChallengeManager 控制平面
-└── host-bridge-challenge-handler.ts    ← challenge host bridge handler
+├── manager.ts                              （新）ChallengeManager 控制平面
+├── manager.test.ts                         （新）单元测试
+├── host-bridge-challenge-handler.ts        （新）challenge host bridge handler
+└── host-bridge-types.ts                    （改）加 4 个 challenge action
 
-packages/core/src/config/tools/challenge-tools.ts   ← LLM 工具
+packages/core/src/config/tools/challenge-tools.ts    （新）LLM 工具
+packages/core/src/config/index.ts                    （改）resolvePromptSession 注册 challengeTools
+packages/core/src/index.ts                           （改）DaemonManager 装配 challenge + barrel 导出
+apps/cli/src/commands/challenge.ts                   （改）challenge sync 命令
 ```
 
 🔑 **关键概念**：
@@ -945,7 +979,7 @@ packages/core/src/config/tools/challenge-tools.ts   ← LLM 工具
 
 ## 下一课预告
 
-[课时 14：Planner LLM 调度循环](./14-planner-loop.md)（待生成）—— 我们会：
+[课时 14：Planner LLM 调度循环](./14-planner-loop.md)—— 我们会：
 
 - 实现 30s 周期的 Planner 循环
 - 实现 planner_* 工具（让 LLM 调度 solver）

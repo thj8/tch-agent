@@ -55,23 +55,28 @@ apps/cli/              CLI 入口（commander）
   src/main.ts          入口：装配 program + 挂命令组 + parseAsync（约 40 行）
   src/utils.ts         formatError / pathExists
   src/event-summary.ts AgentSession 事件 → 一行摘要
-  src/commands/        命令组（misc / config / solver / runtime / challenge，各导出 registerXxxCommands）
+  src/commands/        命令组（misc / config / solver / runtime / challenge / settings，各导出 registerXxxCommands）
 packages/core/         核心库（@my/core）
-  src/index.ts         对外导出（含 DaemonManager 装配根）
+  src/index.ts         对外导出（含 DaemonManager 装配根：config + challenge + runtime）
   src/config/          配置层
-    index.ts           ConfigManager（单例 + resolvePromptSession + applyProviderPrefs）
-    types.ts           AddResult
+    index.ts           ConfigManager（单例 + resolvePromptSession + applyProviderPrefs + host-settings）
+    types.ts           AddResult / HostSettings / HostRuntimeSettings / HostChallengeSettings
     providers/types.ts ProviderPrefEntry（含 models） / ModelConfigEntry
     prompts/index.ts   Prompt 文件加载（YAML frontmatter + MD）
+    tools/             LLM 工具（defineTool）：host-bridge-tools / challenge-tools
     config-manager.test.ts
   src/solver/          AgentSession 装配
     session.ts         createSolverSession
     cli.ts             runSolverCli（事件流 → stdout）
   src/runtime/         Docker runtime
-    runtime.ts         RuntimeManager（构建镜像 / 拉起容器 / RPC）
+    runtime.ts         RuntimeManager（构建镜像 / 拉起容器 / RPC + host bridge handler 链）
   src/solver/rpc/      Solver ↔ Host RPC 协议（init 握手 + host bridge）
-  src/challenge/       Challenge 数据存储层 + challenge 模式 env / host-bridge
+  src/challenge/       Challenge：API 客户端 + 控制平面 + 数据存储 + host bridge
+    api-client.ts      平台 REST 客户端（信封 / 鉴权 / 3 RPS 限流 / mock 模式）
+    manager.ts         ChallengeManager 控制平面（API + store + 业务逻辑）
     store.ts           元数据 + attempts/submissions 日志（原子写 + mkdir 文件锁）
+    host-bridge-*.ts   Solver ↔ Host bridge（client / handler / types / challenge-handler）
+    env.ts             challenge 模式注入容器的环境变量名常量
 packages/ui-web/       Web UI（@my/ui-web）
   src/server.ts        Bun.serve + REST API + Tailwind sidecar
   src/index.html       前端入口
@@ -130,6 +135,20 @@ tinyfat runtime build-image                # 构建/更新 solver 镜像
 tinyfat runtime has-image                  # 镜像是否存在
 tinyfat runtime launch -p <prompt> "<task>"  # 拉起容器跑 solver
 tinyfat runtime list                       # 当前活跃 solver
+
+# Challenge：题目元数据 + 平台同步
+tinyfat challenge create --id <id> --title <t> [--flag-count N] [--total-score N]
+tinyfat challenge list
+tinyfat challenge show <id>
+tinyfat challenge sync                     # 从平台同步（mock 模式时读本地 store）
+tinyfat challenge append-attempt --id <id> --solver-id <s> --prompt <p> --task <t>
+tinyfat challenge list-attempts <id>
+
+# Settings：host-settings（runtime / challenge）
+tinyfat settings show
+tinyfat settings set challenge.mockEnabled true       # 开 mock 模式（离线可跑）
+tinyfat settings set challenge.apiBaseUrl https://... # 对接真实平台
+tinyfat settings set challenge.agentToken xxx
 
 # Web UI：浏览器管理配置 + 看 solver
 tinyfat web                                # 默认 http://127.0.0.1:3000
@@ -196,4 +215,4 @@ bun test --watch
 
 ## 教程
 
-20 课时循序渐进的搭建指南在 [`docs/lessons/`](./docs/lessons/README.md)，当前完成到第 10 课（Web UI + 完整 CRUD）。
+21 课时循序渐进的搭建指南在 [`docs/lessons/`](./docs/lessons/README.md)（文档已全部写完，代码当前实现到第 13 课 Challenge 控制平面 + 第 21 课 CLI 模块化）。

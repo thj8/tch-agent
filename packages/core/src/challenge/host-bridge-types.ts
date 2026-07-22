@@ -9,6 +9,11 @@ export type HostBridgeAction =
     | "ping"
     | "get_env"
     | "get_api_key"
+    // challenge 控制（lesson 13）
+    | "challenge_get_state"
+    | "challenge_submit_flag"
+    | "challenge_get_hint"
+    | "challenge_is_completed"
 
 export interface HostBridgeRequestEvent {
     type: "host_bridge_request"

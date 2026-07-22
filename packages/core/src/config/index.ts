@@ -14,8 +14,9 @@ import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import * as prompts from "./prompts/index"
 import type { ModelConfigEntry, ProviderPrefEntry } from "./providers/types"
-import type { AddResult } from "./types"
+import type { AddResult, HostSettings } from "./types"
 import { hostBridgeTools } from "./tools/host-bridge-tools"
+import { challengeTools } from "./tools/challenge-tools"
 
 // 用户主目录下的配置根目录：~/.tinyfat/
 export const TCH_AGENT_HOME_DIR = resolve(homedir(), ".tinyfat")
@@ -498,7 +499,7 @@ You are a helpful agent that solves tasks step by step.
     const opts: CreateAgentSessionOptions = {
       cwd,
       tools: prompt.meta.tools ?? [],
-      customTools: [...hostBridgeTools],
+      customTools: [...hostBridgeTools, ...challengeTools],
       resourceLoader,
       authStorage: this.auth,
       modelRegistry: this.models,
@@ -540,6 +541,51 @@ You are a helpful agent that solves tasks step by step.
       model,
       ...(pref.thinkingLevel ? { thinkingLevel: pref.thinkingLevel as ThinkingLevel } : {}),
     }
+  }
+
+  // ── Host Settings ──────────────────────────────────────
+
+  /** host-settings.json 的路径 */
+  private hostSettingsPath(): string {
+    return join(this.dir, "host-settings.json")
+  }
+
+  /** 读 host-settings.json（缺失 / 损坏返回空骨架） */
+  async getHostSettings(): Promise<HostSettings> {
+    const file = Bun.file(this.hostSettingsPath())
+    if (!(await file.exists())) {
+      return { runtime: {}, challenge: {} }
+    }
+    try {
+      const data = await file.json()
+      if (typeof data !== "object" || data === null) {
+        return { runtime: {}, challenge: {} }
+      }
+      const obj = data as Partial<HostSettings>
+      return {
+        runtime: { ...(obj.runtime ?? {}) },
+        challenge: { ...(obj.challenge ?? {}) },
+      }
+    } catch {
+      return { runtime: {}, challenge: {} }
+    }
+  }
+
+  /** 浅合并写 host-settings.json（runtime / challenge 各自按字段合并） */
+  async setHostSettings(patch: Partial<HostSettings>): Promise<HostSettings> {
+    const current = await this.getHostSettings()
+    const next: HostSettings = {
+      runtime: { ...current.runtime, ...(patch.runtime ?? {}) },
+      challenge: { ...current.challenge, ...(patch.challenge ?? {}) },
+    }
+    await this.writeJsonAtomic(this.hostSettingsPath(), next)
+    return next
+  }
+
+  /** 便捷：是否启用 challenge mock 模式 */
+  async isChallengeMockMode(): Promise<boolean> {
+    const settings = await this.getHostSettings()
+    return settings.challenge.mockEnabled === true
   }
 
   // ── 工具方法 ────────────────────────────────────────────

@@ -22,13 +22,13 @@
 
 ```bash
 # mock 模式
-tinyfat challenge mock-mode --enable
+tinyfat settings set challenge.mockEnabled true
 tinyfat challenge sync         # 同步赛题列表（mock）
 
 # 或对接真实平台
-tinyfat challenge mock-mode --disable
-tinyfat config host-settings set challenge.apiBaseUrl https://api.ctf.example.com
-tinyfat config host-settings set challenge.agentToken xxx
+tinyfat settings set challenge.mockEnabled false
+tinyfat settings set challenge.apiBaseUrl https://api.ctf.example.com
+tinyfat settings set challenge.agentToken xxx
 ```
 
 ---
@@ -204,10 +204,6 @@ function formatRequestError(error: unknown): string {
         return message || error.name
     }
     return String(error)
-}
-
-function hasHeader(headers: Headers, name: string): boolean {
-    return headers.has(name) || headers.has(name.toLowerCase()) || headers.has(name.toUpperCase())
 }
 
 // ── 客户端类 ────────────────────────────────────────────
@@ -402,37 +398,50 @@ export interface HostSettings {
 修改 `packages/core/src/config/index.ts`：
 
 ```typescript
-// 顶部加 imports
-import type { HostSettings, HostChallengeSettings } from "./types"
+// 顶部加 import（HostChallengeSettings 已被 HostSettings 包含，不必单独 import）
+import type { HostSettings } from "./types"
 
 // 在 ConfigManager 类里：
 
-/** 读 host-settings.json */
+/** host-settings.json 的路径 */
+private hostSettingsPath(): string {
+    return join(this.dir, "host-settings.json")
+}
+
+/** 读 host-settings.json（缺失 / 损坏返回空骨架） */
 async getHostSettings(): Promise<HostSettings> {
-    const file = Bun.file(join(this.dir, "host-settings.json"))
+    const file = Bun.file(this.hostSettingsPath())
     if (!(await file.exists())) {
         return { runtime: {}, challenge: {} }
     }
     try {
         const data = await file.json()
-        return data as HostSettings
+        if (typeof data !== "object" || data === null) {
+            return { runtime: {}, challenge: {} }
+        }
+        const obj = data as Partial<HostSettings>
+        return {
+            runtime: { ...(obj.runtime ?? {}) },
+            challenge: { ...(obj.challenge ?? {}) },
+        }
     } catch {
         return { runtime: {}, challenge: {} }
     }
 }
 
-/** 写 host-settings.json */
+/** 浅合并写 host-settings.json（runtime / challenge 各自按字段合并） */
 async setHostSettings(patch: Partial<HostSettings>): Promise<HostSettings> {
     const current = await this.getHostSettings()
     const next: HostSettings = {
         runtime: { ...current.runtime, ...(patch.runtime ?? {}) },
         challenge: { ...current.challenge, ...(patch.challenge ?? {}) },
     }
-    await Bun.write(join(this.dir, "host-settings.json"), JSON.stringify(next, null, 2))
+    // 复用项目里已有的 writeJsonAtomic（tmp + rename 原子写，见 lesson 02）
+    await this.writeJsonAtomic(this.hostSettingsPath(), next)
     return next
 }
 
-/** 便捷方法：判断是否启用 mock 模式 */
+/** 便捷：是否启用 challenge mock 模式 */
 async isChallengeMockMode(): Promise<boolean> {
     const settings = await this.getHostSettings()
     return settings.challenge.mockEnabled === true
@@ -441,57 +450,74 @@ async isChallengeMockMode(): Promise<boolean> {
 
 ---
 
-## 第三步：CLI 命令
+## 第三步：CLI 命令（modular）
 
-`ConfigManager` 已经在 lesson 2/5 顶部 import 过了，直接用。在 `apps/cli/src/main.ts` 加：
+> ⚠️ lesson 21 把 CLI 按命令组拆到 `apps/cli/src/commands/*.ts`，每个文件导出
+> `registerXxxCommands(program)`，`main.ts` 只负责装配。settings 命令也走这套（详见
+> [lesson 21](./21-cli-refactor.md)）。
+
+### 3.1 新建 apps/cli/src/commands/settings.ts
 
 ```typescript
-// ── host-settings 命令 ──────────────────────────────────
+import type { Command } from "commander"
+import { ConfigManager, type HostChallengeSettings, type HostRuntimeSettings } from "@my/core"
 
-const settingsCmd = program.command("settings").description("Host settings")
+/** 在 program 上挂载 settings 命令组。 */
+export function registerSettingsCommands(program: Command): void {
+  const settingsCmd = program.command("settings").description("Host settings (runtime / challenge)")
 
-settingsCmd
+  settingsCmd
     .command("show")
     .description("Show current host settings")
     .action(async () => {
-        const config = await ConfigManager.getInstance()
-        const settings = await config.getHostSettings()
-        console.log(JSON.stringify(settings, null, 2))
+      const config = await ConfigManager.getInstance()
+      const settings = await config.getHostSettings()
+      console.log(JSON.stringify(settings, null, 2))
     })
 
-settingsCmd
+  settingsCmd
     .command("set")
-    .description("Set a host setting (use dot notation: challenge.mockEnabled)")
+    .description("Set a host setting (dot path: challenge.mockEnabled / runtime.maxSolvers)")
     .argument("<path>", "Setting path (e.g., challenge.mockEnabled)")
-    .argument("<value>", "Value (true/false/string)")
+    .argument("<value>", "Value (true / false / string)")
     .action(async (path: string, value: string) => {
-        const config = await ConfigManager.getInstance()
+      const config = await ConfigManager.getInstance()
 
-        // 解析 value
-        let typedValue: unknown
-        if (value === "true") typedValue = true
-        else if (value === "false") typedValue = false
-        else typedValue = value
+      // 解析 value：true / false / 原样字符串
+      let typedValue: unknown
+      if (value === "true") typedValue = true
+      else if (value === "false") typedValue = false
+      else typedValue = value
 
-        // 解析 path（简化：只支持 challenge.xxx / runtime.xxx）
-        const [section, key] = path.split(".")
-        if (section !== "challenge" && section !== "runtime") {
-            console.error(`✗ Invalid path: ${path}. Use challenge.xxx or runtime.xxx`)
-            process.exit(1)
-        }
+      // 解析 path：只支持 challenge.xxx / runtime.xxx
+      const parts = path.split(".")
+      const section = parts[0]
+      const key = parts[1]
+      if ((section !== "challenge" && section !== "runtime") || !key) {
+        console.error(`✗ Invalid path: ${path}. Use challenge.xxx or runtime.xxx`)
+        process.exit(1)
+      }
 
-        const settings = await config.getHostSettings()
-        if (section === "challenge") {
-            await config.setHostSettings({
-                challenge: { ...settings.challenge, [key!]: typedValue },
-            })
-        } else {
-            await config.setHostSettings({
-                runtime: { ...settings.runtime, [key!]: typedValue },
-            })
-        }
-        console.log(`✓ Set ${path} = ${value}`)
+      const settings = await config.getHostSettings()
+      if (section === "challenge") {
+        const challenge: HostChallengeSettings = { ...settings.challenge, [key]: typedValue }
+        await config.setHostSettings({ challenge })
+      } else {
+        const runtime: HostRuntimeSettings = { ...settings.runtime, [key]: typedValue }
+        await config.setHostSettings({ runtime })
+      }
+      console.log(`✓ Set ${path} = ${value}`)
     })
+}
+```
+
+### 3.2 在 main.ts 注册
+
+```typescript
+import { registerSettingsCommands } from "./commands/settings"
+
+// 在其它 registerXxxCommands 之后：
+registerSettingsCommands(program)
 ```
 
 ---
@@ -611,10 +637,15 @@ bun run typecheck
 - 加 host-settings 管理
 - 加 settings CLI 命令
 
-📦 **新增文件**：
+📦 **新增 / 修改文件**：
 
 ```
-packages/core/src/challenge/api-client.ts
+packages/core/src/challenge/api-client.ts          （新）
+packages/core/src/challenge/api-client.test.ts     （新）
+packages/core/src/config/types.ts                  （改：HostChallengeSettings / HostSettings）
+packages/core/src/config/index.ts                  （改：hostSettingsPath/getHostSettings/setHostSettings/isChallengeMockMode）
+apps/cli/src/commands/settings.ts                  （新：settings show / set）
+apps/cli/src/main.ts                               （改：registerSettingsCommands）
 ```
 
 🔑 **关键概念**：
@@ -627,7 +658,7 @@ packages/core/src/challenge/api-client.ts
 
 ## 下一课预告
 
-[课时 13：ChallengeManager 控制平面](./13-challenge-manager.md)（待生成）—— 我们会：
+[课时 13：ChallengeManager 控制平面](./13-challenge-manager.md)—— 我们会：
 
 - 实现 ChallengeManager（封装 API + store）
 - 实现 start/stop/submit/hint
