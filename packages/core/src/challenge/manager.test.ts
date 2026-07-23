@@ -3,8 +3,15 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ConfigManager } from "../config/index"
-import { ChallengeManager } from "./manager"
-import type { ChallengeRecord } from "./store"
+import {
+    ChallengeManager,
+    buildSolverTask,
+    enumSchema,
+    formatPlannerSnapshot,
+} from "./manager"
+import type { RuntimeManager } from "../runtime/runtime"
+import type { SolverInstance } from "../runtime/types"
+import type { ChallengeInfoRecord, ChallengeRecord } from "./store"
 
 let configDir: string
 let rootDir: string
@@ -161,5 +168,157 @@ describe("ChallengeManager - 真实模式", () => {
             ConfigManager.resetInstance()
             await rm(realConfigDir, { recursive: true, force: true })
         }
+    })
+})
+
+// ── lesson 14：Planner 调度 ──────────────────────────
+
+function infoRecord(id: string, overrides: Partial<ChallengeRecord> = {}): ChallengeInfoRecord {
+    return baseRecord(id, overrides) as unknown as ChallengeInfoRecord
+}
+
+/** 最小 fake runtime：只实现 launchSolver 依赖的 launch/list/stopSolver，记录 launch 调用。 */
+function makeFakeRuntime() {
+    const launchCalls: Array<{
+        promptName: string
+        task: string
+        env: Record<string, string>
+    }> = []
+    return {
+        launchCalls,
+        async launch(
+            promptName: string,
+            task: string,
+            env: Record<string, string>,
+        ): Promise<SolverInstance> {
+            launchCalls.push({ promptName, task, env })
+            return {
+                id: "solversol1",
+                containerId: "tch-solver-solversol1",
+                name: "tch-solver-solversol1",
+                promptName,
+                task,
+                challengeId: env.TCH_CHALLENGE_ID,
+                status: "running",
+                createdAt: 0,
+            }
+        },
+        list(): SolverInstance[] {
+            return []
+        },
+        async stopSolver(_solverId: string): Promise<void> {},
+    }
+}
+
+describe("Planner 纯函数：buildSolverTask", () => {
+    test("基础字段 + 目标行", () => {
+        const task = buildSolverTask(infoRecord("c1"))
+        expect(task).toContain("# Challenge: title-c1")
+        expect(task).toContain("- id: c1")
+        expect(task).toContain("- difficulty: easy")
+        expect(task).toContain("- flags: 0/1")
+        expect(task).toContain("submit all flags using challenge_submit_flag")
+    })
+
+    test("entrypoint / hint / handoff 按需出现", () => {
+        const task = buildSolverTask(
+            infoRecord("c1", { entrypoint: ["1.2.3.4:80"], hint_content: "look here" }),
+            "try sqlmap",
+        )
+        expect(task).toContain("- entrypoint: 1.2.3.4:80")
+        expect(task).toContain("## Hint\nlook here")
+        expect(task).toContain("## Strategy\ntry sqlmap")
+    })
+
+    test("无 entrypoint/hint/handoff 时不出现对应行", () => {
+        const task = buildSolverTask(infoRecord("c1"))
+        expect(task).not.toContain("entrypoint")
+        expect(task).not.toContain("## Hint")
+        expect(task).not.toContain("## Strategy")
+    })
+})
+
+describe("Planner 纯函数：formatPlannerSnapshot", () => {
+    test("各 section + 计数", () => {
+        const text = formatPlannerSnapshot({
+            source: "manual",
+            timestamp: "2026-01-01T00:00:00.000Z",
+            challenges: [infoRecord("c1"), infoRecord("c2")],
+            activeSolvers: [
+                {
+                    id: "s1",
+                    containerId: "c",
+                    name: "n",
+                    promptName: "SOLVER",
+                    task: "t",
+                    status: "running",
+                    createdAt: 0,
+                    challengeId: "c1",
+                },
+            ],
+            availablePrompts: ["SOLVER", "CHALLENGE_PLANNER"],
+        })
+        expect(text).toContain("Source: manual")
+        expect(text).toContain("## Active Solvers (1)")
+        expect(text).toContain("- s1 (running")
+        expect(text).toContain("## Available Prompts")
+        expect(text).toContain("- CHALLENGE_PLANNER")
+        expect(text).toContain("## Unsolved Challenges (2)")
+        expect(text).toContain("- c1 (easy")
+    })
+})
+
+describe("Planner 纯函数：enumSchema", () => {
+    test("非空 → Literal Union（含每个值）", () => {
+        const schema = enumSchema(["a", "b"], "fallback")
+        const json = JSON.stringify(schema)
+        expect(json).toContain('"a"')
+        expect(json).toContain('"b"')
+    })
+
+    test("空 → 自由 String（带 fallback 描述）", () => {
+        const schema = enumSchema([], "fallback desc")
+        expect(JSON.stringify(schema)).toContain("fallback desc")
+    })
+})
+
+describe("ChallengeManager - launchSolver 编排（mock runtime）", () => {
+    test("未 attach runtime → 抛错", async () => {
+        await mgr.createChallenge(baseRecord("c1"))
+        await expect(mgr.launchSolver("c1", "SOLVER")).rejects.toThrow(/runtime not attached/)
+    })
+
+    test("prompt 不存在 → 抛错", async () => {
+        await mgr.createChallenge(baseRecord("c1"))
+        const fake = makeFakeRuntime()
+        mgr.attachRuntime(fake as unknown as RuntimeManager)
+        await expect(mgr.launchSolver("c1", "NOPE")).rejects.toThrow(/prompt not found/)
+    })
+
+    test("已完成题 → 抛错", async () => {
+        await mgr.createChallenge(baseRecord("c1", { flag_count: 1, flag_got_count: 1 }))
+        await config.savePrompt({ name: "SOLVER", meta: {}, content: "" })
+        const fake = makeFakeRuntime()
+        mgr.attachRuntime(fake as unknown as RuntimeManager)
+        await expect(mgr.launchSolver("c1", "SOLVER")).rejects.toThrow(/already completed/)
+    })
+
+    test("正常：start 占位 + launch 注入 challengeId + 记 attempt log", async () => {
+        await mgr.createChallenge(baseRecord("c1"))
+        await config.savePrompt({ name: "SOLVER", meta: {}, content: "be a solver" })
+        const fake = makeFakeRuntime()
+        mgr.attachRuntime(fake as unknown as RuntimeManager)
+
+        const solver = await mgr.launchSolver("c1", "SOLVER", { plannerHandoff: "try x" })
+        expect(solver.id).toBe("solversol1")
+        expect(fake.launchCalls).toHaveLength(1)
+        expect(fake.launchCalls[0].env.TCH_CHALLENGE_ID).toBe("c1")
+        expect(fake.launchCalls[0].promptName).toBe("SOLVER")
+        expect(fake.launchCalls[0].task).toContain("try x")
+
+        // attempt log 记录了这次启动
+        const attempts = await mgr.listAttemptLogs("c1")
+        expect(attempts).toHaveLength(1)
+        expect(attempts[0].solver_id).toBe("solversol1")
     })
 })

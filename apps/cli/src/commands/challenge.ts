@@ -11,6 +11,7 @@ import type { Command } from "commander"
 import {
   ChallengeManager,
   ConfigManager,
+  DaemonManager,
   DEFAULT_CHALLENGE_DIR,
   appendChallengeAttemptLog,
   listChallengeAttemptLogs,
@@ -149,6 +150,36 @@ export function registerChallengeCommands(program: Command): void {
       }
       for (const a of list) {
         console.log(`[${a.created_at}] ${a.solver_id} (${a.prompt_name}): ${a.task.slice(0, 60)}`)
+      }
+    })
+
+  challengeCmd
+    .command("tick")
+    .description("Run one planner tick manually (needs Docker + CHALLENGE_PLANNER prompt)")
+    .action(async () => {
+      // tick 要调度 solver，必须走 DaemonManager（装配 runtime）。
+      // 注意：DaemonManager.getInstance() 会触发 runtime.init()（ensure Docker 镜像）。
+      try {
+        const daemon = await DaemonManager.getInstance()
+        await daemon.challenge.tickPlanner("manual")
+      } catch (error) {
+        console.error(`✗ ${error instanceof Error ? error.message : String(error)}`)
+        process.exit(1)
+      }
+    })
+
+  challengeCmd
+    .command("start-loop")
+    .description("Start the planner sync loop (30s interval)")
+    .action(async () => {
+      try {
+        const daemon = await DaemonManager.getInstance()
+        daemon.challenge.startSyncLoop()
+        console.log("Planner loop started. Press Ctrl+C to stop.")
+        await new Promise(() => {})
+      } catch (error) {
+        console.error(`✗ ${error instanceof Error ? error.message : String(error)}`)
+        process.exit(1)
       }
     })
 }

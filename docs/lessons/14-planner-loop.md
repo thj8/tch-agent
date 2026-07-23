@@ -105,8 +105,11 @@ LLM 只能从 snapshot 里实际存在的 ID 里选。
 修改 `packages/core/src/challenge/manager.ts`，在 ChallengeManager 类里加：
 
 ```typescript
-// 顶部加 import
-import { defineTool, Type } from "@mariozechner/pi-coding-agent"
+// 顶部加 import（Type 必须从 typebox 来，SDK 不导出 Type）
+import { createAgentSession, defineTool, SessionManager } from "@mariozechner/pi-coding-agent"
+import type { ToolDefinition } from "@mariozechner/pi-coding-agent"
+import { Type } from "typebox"
+import type { TSchema } from "typebox"
 import type { SolverInstance } from "../runtime/types"
 
 /**
@@ -142,9 +145,8 @@ async launchSolver(
         await this.startChallenge(challengeId)
     }
 
-    // 生成 solverId + task
-    const solverId = crypto.randomUUID().slice(0, 8)
-    const task = await this.buildSolverTask(challenge, options.plannerHandoff)
+    // 装配 task（solverId 由 runtime.launch 内部生成，这里不预先生成）
+    const task = buildSolverTask(challenge, options.plannerHandoff)
 
     // 拉起容器
     const solver = await this.runtime.launch(promptName, task, {
@@ -165,11 +167,15 @@ async launchSolver(
 
 /**
  * 装配 solver 的初始 task 文本。
+ *
+ * 注意：buildSolverTask / formatPlannerSnapshot / enumSchema 三个纯函数都提成
+ * 模块级 export（放在 manager.ts 末尾），便于单元测试直接 import 调用；
+ * 它们不属于 ChallengeManager 类，launchSolver 里以 `buildSolverTask(...)` 调用（无 this）。
  */
-private async buildSolverTask(
+export function buildSolverTask(
     challenge: ChallengeInfoRecord,
     plannerHandoff?: string,
-): Promise<string> {
+): string {
     const parts: string[] = []
     parts.push(`# Challenge: ${challenge.title}`)
     parts.push(`- id: ${challenge.id}`)
@@ -369,23 +375,12 @@ private createPlannerTools(snapshot: {
     availablePrompts: string[]
 }): ToolDefinition[] {
     const challengeIds = snapshot.challenges.map((c) => c.id)
-    const promptNames = snapshot.availablePrompts
     const activeSolverIds = snapshot.activeSolvers.map((s) => s.id)
 
-    const challengeIdSchema =
-        challengeIds.length > 0
-            ? Type.Union(challengeIds.map((id) => Type.Literal(id)))
-            : Type.String({ description: "challenge id" })
-
-    const promptNameSchema =
-        promptNames.length > 0
-            ? Type.Union(promptNames.map((name) => Type.Literal(name)))
-            : Type.String({ description: "prompt name" })
-
-    const solverIdSchema =
-        activeSolverIds.length > 0
-            ? Type.Union(activeSolverIds.map((id) => Type.Literal(id)))
-            : Type.String({ description: "solver id" })
+    // enumSchema：非空 → Literal Union（约束 LLM 只能选现有 id）；空 → 自由 String
+    const challengeIdSchema = enumSchema(challengeIds, "challenge id")
+    const promptNameSchema = enumSchema(snapshot.availablePrompts, "prompt name")
+    const solverIdSchema = enumSchema(activeSolverIds, "solver id")
 
     return [
         defineTool({
@@ -397,6 +392,7 @@ private createPlannerTools(snapshot: {
                 const fresh = await this.buildPlannerSnapshot("tool-state")
                 return {
                     content: [{ type: "text", text: formatPlannerSnapshot(fresh) }],
+                    details: undefined,
                 }
             },
         }),
@@ -410,6 +406,7 @@ private createPlannerTools(snapshot: {
                 const result = await this.startChallenge(params.challengeId)
                 return {
                     content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+                    details: undefined,
                 }
             },
         }),
@@ -423,6 +420,7 @@ private createPlannerTools(snapshot: {
                 const result = await this.stopChallenge(params.challengeId)
                 return {
                     content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+                    details: undefined,
                 }
             },
         }),
@@ -452,6 +450,7 @@ private createPlannerTools(snapshot: {
                     })
                     return {
                         content: [{ type: "text", text: `Launched solver ${solver.id} for ${params.challengeId}` }],
+                        details: undefined,
                     }
                 } catch (error) {
                     return {
@@ -461,6 +460,7 @@ private createPlannerTools(snapshot: {
                                 text: `Launch failed: ${error instanceof Error ? error.message : String(error)}`,
                             },
                         ],
+                        details: undefined,
                     }
                 }
             },
@@ -476,6 +476,7 @@ private createPlannerTools(snapshot: {
                 await this.runtime.stopSolver(params.solverId)
                 return {
                     content: [{ type: "text", text: `Stopped solver ${params.solverId}` }],
+                    details: undefined,
                 }
             },
         }),
@@ -488,7 +489,7 @@ private createPlannerTools(snapshot: {
 在 manager.ts 末尾加：
 
 ```typescript
-function formatPlannerSnapshot(snapshot: {
+export function formatPlannerSnapshot(snapshot: {
     source: string
     timestamp: string
     challenges: ChallengeInfoRecord[]
@@ -517,13 +518,21 @@ function formatPlannerSnapshot(snapshot: {
     }
     return parts.join("\n")
 }
+
+/**
+ * 把一组 ID 收紧成 typebox 枚举 schema（Literal Union）；
+ * 空集时退化为自由 String，让 LLM 仍能调用（ albeit 无约束）。
+ */
+export function enumSchema(values: string[], fallbackDesc: string): TSchema {
+    return values.length > 0
+        ? Type.Union(values.map((v) => Type.Literal(v)))
+        : Type.String({ description: fallbackDesc })
+}
 ```
 
-### 2.3 在文件顶部加 import
+### 2.3 import 说明
 
-```typescript
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent"
-```
+`ToolDefinition` / `Type` / `TSchema` / `SessionManager` / `createAgentSession` 已在第一步的 import 块里统一引入——注意 `Type` 必须从 `typebox` 来，SDK 不导出 `Type`。
 
 ---
 
@@ -575,25 +584,37 @@ Be concise. Don't repeat the snapshot back—just take actions.
 
 ## 第四步：CLI 命令
 
-`DaemonManager` 已经在 lesson 13 顶部 import 过了，直接用：
+`challenge.ts` 顶部 `@my/core` import 块需加入 `DaemonManager`（lesson 14 新增：调度 solver 必须走 DaemonManager 装配的 runtime）。命令按 CLI 约定加 try/catch + `process.exit(1)`：
 
 ```typescript
 challengeCmd
-    .command("start-loop")
-    .description("Start the planner sync loop")
+    .command("tick")
+    .description("Run one planner tick manually (needs Docker + CHALLENGE_PLANNER prompt)")
     .action(async () => {
-        const daemon = await DaemonManager.getInstance()
-        daemon.challenge.startSyncLoop()
-        console.log("Planner loop started. Press Ctrl+C to stop.")
-        await new Promise(() => {})
+        // tick 要调度 solver，必须走 DaemonManager（装配 runtime）。
+        // 注意：DaemonManager.getInstance() 会触发 runtime.init()（ensure Docker 镜像）。
+        try {
+            const daemon = await DaemonManager.getInstance()
+            await daemon.challenge.tickPlanner("manual")
+        } catch (error) {
+            console.error(`✗ ${error instanceof Error ? error.message : String(error)}`)
+            process.exit(1)
+        }
     })
 
 challengeCmd
-    .command("tick")
-    .description("Run one planner tick manually")
+    .command("start-loop")
+    .description("Start the planner sync loop (30s interval)")
     .action(async () => {
-        const daemon = await DaemonManager.getInstance()
-        await daemon.challenge.tickPlanner("manual")
+        try {
+            const daemon = await DaemonManager.getInstance()
+            daemon.challenge.startSyncLoop()
+            console.log("Planner loop started. Press Ctrl+C to stop.")
+            await new Promise(() => {})
+        } catch (error) {
+            console.error(`✗ ${error instanceof Error ? error.message : String(error)}`)
+            process.exit(1)
+        }
     })
 ```
 
@@ -630,11 +651,14 @@ bun run apps/cli/src/main.ts challenge start-loop
 
 **预期**：每 30s 跑一次，自动起 solver 解题。
 
-### 5.4 类型检查
+### 5.4 类型检查 + 单元测试
 
 ```bash
 bun run typecheck
+bun test packages/core/src/challenge/manager.test.ts
 ```
+
+`manager.test.ts` 覆盖了三个纯函数（`buildSolverTask` / `formatPlannerSnapshot` / `enumSchema`）和 `launchSolver` 编排（用 fake runtime，不碰 Docker / LLM）；Planner LLM 调度本身按 5.2 手动验证。
 
 ---
 

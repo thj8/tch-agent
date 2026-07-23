@@ -24,6 +24,11 @@ import type {
 } from "./store"
 import type { ConfigManager } from "../config/index"
 import type { RuntimeManager } from "../runtime/runtime"
+import { createAgentSession, defineTool, SessionManager } from "@mariozechner/pi-coding-agent"
+import type { ToolDefinition } from "@mariozechner/pi-coding-agent"
+import { Type } from "typebox"
+import type { TSchema } from "typebox"
+import type { SolverInstance } from "../runtime/types"
 
 /**
  * 提交 flag 时的元数据。
@@ -63,6 +68,13 @@ export class ChallengeManager {
     private readonly rootDir: string
     private api: ChallengeApiClient | undefined
     private runtime: RuntimeManager | undefined
+
+    // ── Planner 调度循环（lesson 14） ──
+    private syncTimer: ReturnType<typeof setTimeout> | undefined
+    private syncLoopStarted = false
+    private plannerRunning = false
+    /** 默认 30s tick */
+    private static readonly DEFAULT_TICK_INTERVAL_MS = 30_000
 
     constructor(config: ConfigManager, rootDir: string = DEFAULT_CHALLENGE_DIR) {
         this.config = config
@@ -388,6 +400,334 @@ export class ChallengeManager {
         }
     }
 
+    // ── Planner 调度（lesson 14：LLM-as-orchestrator） ──
+
+    /**
+     * 启动一个 Solver 处理指定 challenge（Planner → Runtime）。
+     *
+     * 流程：
+     *   1. 校验 runtime / prompt / challenge
+     *   2. 若实例未起，先 startChallenge 占槽位
+     *   3. 装配 task 文本（solverId 由 runtime.launch 内部生成）
+     *   4. runtime.launch 拉起容器（注入 TCH_CHALLENGE_ID）
+     *   5. appendAttemptLog 记录
+     */
+    async launchSolver(
+        challengeId: string,
+        promptName: string,
+        options: { plannerHandoff?: string } = {},
+    ): Promise<SolverInstance> {
+        if (!this.runtime) throw new Error("runtime not attached")
+
+        const prompt = await this.config.getPrompt(promptName)
+        if (!prompt) throw new Error(`prompt not found: ${promptName}`)
+        if (prompt.meta.disabled) throw new Error(`prompt disabled: ${promptName}`)
+
+        const challenge = await this.getChallenge(challengeId)
+        if (!challenge) throw new Error(`challenge not found: ${challengeId}`)
+        if (computeChallengeCompleted(challenge)) {
+            throw new Error(`challenge already completed: ${challengeId}`)
+        }
+
+        // 确保实例在跑
+        if (challenge.instance_status !== "running") {
+            await this.startChallenge(challengeId)
+        }
+
+        // 装配 task（solverId 由 runtime.launch 内部生成）
+        const task = buildSolverTask(challenge, options.plannerHandoff)
+
+        // 拉起容器（TCH_CHALLENGE_ID 让容器内 solver 能反查 challenge）
+        const solver = await this.runtime.launch(promptName, task, {
+            TCH_CHALLENGE_ID: challengeId,
+        })
+
+        // 记录启动日志
+        await this.appendAttemptLog({
+            challengeId,
+            solverId: solver.id,
+            promptName,
+            task,
+        })
+
+        console.log(`[challenge] launched solver ${solver.id} for ${challengeId}`)
+        return solver
+    }
+
+    /**
+     * 启动 Planner 调度循环。整个进程只调一次。
+     * 每 DEFAULT_TICK_INTERVAL_MS（默认 30s）跑一次 tickPlanner。
+     */
+    startSyncLoop(): void {
+        if (this.syncLoopStarted) return
+        this.syncLoopStarted = true
+        console.log(
+            `[planner] sync loop started (interval=${ChallengeManager.DEFAULT_TICK_INTERVAL_MS}ms)`,
+        )
+
+        const tick = async (): Promise<void> => {
+            try {
+                await this.tickPlanner("challenge-planner:loop")
+            } catch (error) {
+                console.error("[planner] tick failed:", error)
+            } finally {
+                this.syncTimer = setTimeout(tick, ChallengeManager.DEFAULT_TICK_INTERVAL_MS)
+            }
+        }
+        void tick()
+    }
+
+    /** 停止调度循环 */
+    stopSyncLoop(): void {
+        if (this.syncTimer) clearTimeout(this.syncTimer)
+        this.syncTimer = undefined
+        this.syncLoopStarted = false
+    }
+
+    /**
+     * 触发一次 Planner 调度。用 plannerRunning 锁防并发。
+     */
+    async tickPlanner(source = "manual"): Promise<string | undefined> {
+        if (this.plannerRunning) {
+            console.log("[planner] already running, skipping")
+            return
+        }
+        this.plannerRunning = true
+        try {
+            return await this.runPlannerOnce(source)
+        } catch (error) {
+            console.error("[planner] tick failed:", error)
+            return
+        } finally {
+            this.plannerRunning = false
+        }
+    }
+
+    /**
+     * 跑一次 Planner LLM。
+     *
+     * 流程：snapshot → 注入 systemPrompt → 注册 planner 工具 → createAgentSession → prompt → dispose。
+     * 任一前置不满足（runtime 未注入 / prompt 不存在 / 无未完成题）都优雅跳过，不抛错。
+     */
+    private async runPlannerOnce(source: string): Promise<string | undefined> {
+        if (!this.runtime) {
+            console.log("[planner] runtime not attached, skipping")
+            return
+        }
+
+        const plannerPromptName = "CHALLENGE_PLANNER"
+        const sessionOpts = await this.config.resolvePromptSession(plannerPromptName)
+        if (!sessionOpts?.resourceLoader) {
+            console.log(`[planner] prompt "${plannerPromptName}" not found, skipping`)
+            return
+        }
+
+        const snapshot = await this.buildPlannerSnapshot(source)
+        if (snapshot.challenges.length === 0) {
+            console.log("[planner] no challenges to schedule")
+            return
+        }
+
+        // 注入 snapshot 到 systemPrompt（覆盖 resourceLoader 的 override）
+        const resourceLoader = sessionOpts.resourceLoader
+        const snapshotText = formatPlannerSnapshot(snapshot)
+        ;(resourceLoader as { systemPromptOverride?: () => string }).systemPromptOverride =
+            () => `${plannerPromptName}\n\n## Current Snapshot\n${snapshotText}`
+        await resourceLoader.reload()
+
+        // 注册 planner 工具
+        const plannerTools = this.createPlannerTools(snapshot)
+
+        const { session } = await createAgentSession({
+            ...sessionOpts,
+            resourceLoader,
+            customTools: [...(sessionOpts.customTools ?? []), ...plannerTools],
+            sessionManager: SessionManager.inMemory(), // 一次性，不落盘
+        })
+
+        let plannerOutput = ""
+        // 防御性断言：不依赖 SDK AgentEvent 的精确 d.ts，按需字段取。
+        session.subscribe((event) => {
+            const e = event as {
+                type: string
+                message?: { role?: string; content?: unknown }
+                isError?: boolean
+                toolName?: string
+                result?: unknown
+            }
+            if (
+                e.type === "message_end" &&
+                e.message?.role === "assistant" &&
+                Array.isArray(e.message.content)
+            ) {
+                plannerOutput = (
+                    e.message.content as Array<{ type: string; text?: string }>
+                )
+                    .filter((c) => c.type === "text")
+                    .map((c) => c.text ?? "")
+                    .join("")
+            }
+            if (e.type === "tool_execution_end" && e.isError) {
+                console.error(`[planner] tool ${e.toolName} failed:`, e.result)
+            }
+        })
+
+        console.log(`\n========== planner round (source=${source}) ==========`)
+        await session.prompt("开始本轮比赛调度。")
+        session.dispose()
+        console.log(`========== end planner round ==========\n`)
+
+        return plannerOutput
+    }
+
+    /**
+     * 拍 Planner snapshot：未完成题 + 活跃 solver + 可用 prompt。
+     */
+    private async buildPlannerSnapshot(source: string): Promise<{
+        source: string
+        timestamp: string
+        challenges: ChallengeInfoRecord[]
+        activeSolvers: SolverInstance[]
+        availablePrompts: string[]
+    }> {
+        const rootDir = await this.getRootDir()
+        const all = await listChallengeRecords(rootDir)
+        const unsolved = all.filter((c) => !computeChallengeCompleted(c))
+
+        const activeSolvers = this.runtime?.list() ?? []
+        const promptsList = await this.config.listAgentPrompts()
+        const availablePrompts = promptsList.map((p) => p.name)
+
+        return {
+            source,
+            timestamp: new Date().toISOString(),
+            challenges: unsolved,
+            activeSolvers,
+            availablePrompts,
+        }
+    }
+
+    /**
+     * 创建 Planner 工具集。
+     *
+     * 安全设计：challengeId / promptName / solverId 用 Literal 枚举限制，
+     * LLM 只能从 snapshot 实际存在的 ID 里选（空集退化为自由 String）。
+     */
+    private createPlannerTools(snapshot: {
+        challenges: ChallengeInfoRecord[]
+        activeSolvers: SolverInstance[]
+        availablePrompts: string[]
+    }): ToolDefinition[] {
+        const challengeIds = snapshot.challenges.map((c) => c.id)
+        const activeSolverIds = snapshot.activeSolvers.map((s) => s.id)
+
+        const challengeIdSchema = enumSchema(challengeIds, "challenge id")
+        const promptNameSchema = enumSchema(snapshot.availablePrompts, "prompt name")
+        const solverIdSchema = enumSchema(activeSolverIds, "solver id")
+
+        return [
+            defineTool({
+                name: "planner_get_state",
+                label: "Get State",
+                description: "Get current planner snapshot",
+                parameters: Type.Object({}),
+                execute: async () => {
+                    const fresh = await this.buildPlannerSnapshot("tool-state")
+                    return {
+                        content: [{ type: "text", text: formatPlannerSnapshot(fresh) }],
+                        details: undefined,
+                    }
+                },
+            }),
+            defineTool({
+                name: "planner_start_challenge",
+                label: "Start Challenge",
+                description: "Start a challenge instance",
+                parameters: Type.Object({ challengeId: challengeIdSchema }),
+                execute: async (_id, params: { challengeId: string }) => {
+                    const result = await this.startChallenge(params.challengeId)
+                    return {
+                        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+                        details: undefined,
+                    }
+                },
+            }),
+            defineTool({
+                name: "planner_stop_challenge",
+                label: "Stop Challenge",
+                description: "Stop a challenge instance",
+                parameters: Type.Object({ challengeId: challengeIdSchema }),
+                execute: async (_id, params: { challengeId: string }) => {
+                    const result = await this.stopChallenge(params.challengeId)
+                    return {
+                        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+                        details: undefined,
+                    }
+                },
+            }),
+            defineTool({
+                name: "planner_launch_solver",
+                label: "Launch Solver",
+                description:
+                    "Launch a solver for a challenge. solverHandoff is a brief strategy note for the solver.",
+                parameters: Type.Object({
+                    challengeId: challengeIdSchema,
+                    promptName: promptNameSchema,
+                    solverHandoff: Type.String({
+                        minLength: 1,
+                        maxLength: 1200,
+                        description: "Strategy note for the solver",
+                    }),
+                }),
+                execute: async (
+                    _id,
+                    params: { challengeId: string; promptName: string; solverHandoff: string },
+                ) => {
+                    try {
+                        const solver = await this.launchSolver(
+                            params.challengeId,
+                            params.promptName,
+                            { plannerHandoff: params.solverHandoff },
+                        )
+                        return {
+                            content: [
+                                {
+                                    type: "text",
+                                    text: `Launched solver ${solver.id} for ${params.challengeId}`,
+                                },
+                            ],
+                            details: undefined,
+                        }
+                    } catch (error) {
+                        return {
+                            content: [
+                                {
+                                    type: "text",
+                                    text: `Launch failed: ${error instanceof Error ? error.message : String(error)}`,
+                                },
+                            ],
+                            details: undefined,
+                        }
+                    }
+                },
+            }),
+            defineTool({
+                name: "planner_stop_solver",
+                label: "Stop Solver",
+                description: "Stop a running solver",
+                parameters: Type.Object({ solverId: solverIdSchema }),
+                execute: async (_id, params: { solverId: string }) => {
+                    if (!this.runtime) throw new Error("runtime not attached")
+                    await this.runtime.stopSolver(params.solverId)
+                    return {
+                        content: [{ type: "text", text: `Stopped solver ${params.solverId}` }],
+                        details: undefined,
+                    }
+                },
+            }),
+        ]
+    }
+
     /** 便捷方法：追加启动日志 */
     async appendAttemptLog(input: {
         challengeId: string
@@ -446,4 +786,80 @@ function mergeApiChallengeToRecord(
         // 保留原有的 flags（mock 模式下才有）
         flags: existing?.flags,
     }
+}
+
+// ── Planner 纯函数（lesson 14，导出便于单测） ───────────
+
+/**
+ * 装配 solver 的初始 task 文本。
+ */
+export function buildSolverTask(
+    challenge: ChallengeInfoRecord,
+    plannerHandoff?: string,
+): string {
+    const parts: string[] = []
+    parts.push(`# Challenge: ${challenge.title}`)
+    parts.push(`- id: ${challenge.id}`)
+    parts.push(`- difficulty: ${challenge.difficulty}`)
+    parts.push(`- level: ${challenge.level}`)
+    parts.push(`- flags: ${challenge.flag_got_count}/${challenge.flag_count}`)
+    parts.push(`- score: ${challenge.total_got_score}/${challenge.total_score}`)
+    if (challenge.entrypoint && challenge.entrypoint.length > 0) {
+        parts.push(`- entrypoint: ${challenge.entrypoint.join(", ")}`)
+    }
+    if (challenge.hint_content) {
+        parts.push(`\n## Hint\n${challenge.hint_content}`)
+    }
+    if (plannerHandoff) {
+        parts.push(`\n## Strategy\n${plannerHandoff}`)
+    }
+    parts.push(
+        `\n## Your Goal\nSolve this challenge and submit all flags using challenge_submit_flag.`,
+    )
+    return parts.join("\n")
+}
+
+/**
+ * 把 Planner snapshot 格式化成给 LLM 看的文本。
+ */
+export function formatPlannerSnapshot(snapshot: {
+    source: string
+    timestamp: string
+    challenges: ChallengeInfoRecord[]
+    activeSolvers: SolverInstance[]
+    availablePrompts: string[]
+}): string {
+    const parts: string[] = []
+    parts.push(`# Snapshot (${snapshot.timestamp})`)
+    parts.push(`Source: ${snapshot.source}`)
+    parts.push("")
+    parts.push(`## Active Solvers (${snapshot.activeSolvers.length})`)
+    for (const s of snapshot.activeSolvers) {
+        parts.push(
+            `- ${s.id} (${s.status}, prompt=${s.promptName}, challenge=${s.challengeId ?? "-"})`,
+        )
+    }
+    parts.push("")
+    parts.push(`## Available Prompts`)
+    for (const p of snapshot.availablePrompts) {
+        parts.push(`- ${p}`)
+    }
+    parts.push("")
+    parts.push(`## Unsolved Challenges (${snapshot.challenges.length})`)
+    for (const c of snapshot.challenges) {
+        parts.push(
+            `- ${c.id} (${c.difficulty}, flags=${c.flag_got_count}/${c.flag_count}, status=${c.instance_status})`,
+        )
+    }
+    return parts.join("\n")
+}
+
+/**
+ * 把一组 ID 收紧成 typebox 枚举 schema（Literal Union）；
+ * 空集时退化为自由 String，让 LLM 仍能调用（ albeit 无约束）。
+ */
+export function enumSchema(values: string[], fallbackDesc: string): TSchema {
+    return values.length > 0
+        ? Type.Union(values.map((v) => Type.Literal(v)))
+        : Type.String({ description: fallbackDesc })
 }
