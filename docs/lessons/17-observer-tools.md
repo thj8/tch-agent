@@ -66,11 +66,12 @@ Observer 通过工具维护板：
 | `memory_update` | 改 memory |
 | `memory_delete` | 删 memory |
 | `idea_list` | 查 ideas |
+| `idea_search` | 搜 ideas（按 content/result 子串） |
 | `idea_add` | 加 idea |
 | `idea_update` | 改 idea 状态 / result |
-| `idea_delete` | 删 idea |
-| `send_efficiency_reminder` | 给 Solver 发纠偏 |
-| `query_solver_history` | 深度回溯 Solver 历史 |
+| `send_efficiency_reminder` | 给 Solver 发纠偏（工厂函数，需传回调） |
+
+> `idea_delete` 与 `query_solver_history` 暂不在本课实现（留到后续课时按需补），本课工具集即上表 8 个 board 工具 + `send_efficiency_reminder`。
 
 这些工具只给 Observer 用（通过 prompt 约束）。
 
@@ -101,7 +102,7 @@ mkdir -p packages/core/src/solver/extension/challenge-observer
 新建 `packages/core/src/solver/extension/challenge-observer/board-format.ts`：
 
 ```typescript
-import type { IdeaRecord, MemoryEntry } from "../../../../challenge/memory"
+import type { IdeaRecord, MemoryEntry } from "../../../challenge/memory"
 
 /** 把字符串裁剪到 maxChars，超出加 `...` */
 function clipText(value: string, maxChars: number): string {
@@ -293,7 +294,7 @@ export async function updateSolverBoardIdea(
 }
 ```
 
-> 💡 注意：`updateChallengeMemory` 和 `deleteChallengeMemory` 在课时 16 的代码里没列出来，需要自己补全（结构和 challenge 级的对应方法一样，只是路径不同）。
+> 💡 `updateChallengeMemory` / `deleteChallengeMemory` 在课时 16 已实现（见 `challenge/memory.ts`），board-store 直接复用即可，**无需补全**。
 
 ---
 
@@ -305,8 +306,8 @@ export async function updateSolverBoardIdea(
 
 ```typescript
 import { defineTool } from "@mariozechner/pi-coding-agent"
-import { Type } from "@sinclair/typebox"
-import type { IdeaStatus, MemoryKind } from "../../../../challenge/memory"
+import { Type } from "typebox"
+import type { MemoryKind } from "../../../challenge/memory"
 import {
     addSolverBoardIdea,
     appendSolverBoardMemory,
@@ -316,7 +317,7 @@ import {
     searchSolverBoardIdeas,
     updateSolverBoardIdea,
     updateSolverBoardMemory,
-} from "../../../board-store"
+} from "../../board-store"
 import { formatIdeaTable, formatMemoryTable } from "./board-format"
 
 const EmptyParams = Type.Object({})
@@ -544,36 +545,49 @@ export function createObserverSidecarTools(options: {
 
 ---
 
+> ⚠️ **`AgentToolResult` 必须带 `details` 字段**：SDK 的工具返回类型是 `{ content, details }`，`details` 不可省略。不需要结构化细节时显式写 `details: undefined`（如 `memory_delete` / `idea_search`），否则 tsc 报 "Property 'details' is missing"。参考 `config/tools/challenge-tools.ts` 的写法。
+>
+> 💡 **typebox 包名**：`import { Type } from "typebox"`（**不是** `@sinclair/typebox`），与 `challenge-tools.ts` 一致。
+>
+> 💡 **相对路径**：`tools.ts` 在 `solver/extension/challenge-observer/` 下，回溯到 `solver/board-store` 是 `../../board-store`（两级），到 `challenge/memory` 是 `../../../challenge/memory`（三级）——别多写一级。
+
 ## 第四步：在 createSolverSession 注册工具
 
 ### 4.1 修改 packages/core/src/solver/session.ts
+
+两处改动：① 顶部 import；② 在 `createSolverSession` 里注入 `TCH_SOLVER_SESSION_DIR` 给 board-store，再把 observer 工具并入 `customTools`。
 
 ```typescript
 // 顶部加 import
 import { createObserverSidecarTools } from "./extension/challenge-observer/tools"
 
-// 在 createSolverSession 里，组装 customTools：
-const observerTools = createObserverSidecarTools()
+// 在 createSolverSession 里，mkdir 之后、创建 session 之前：
+// board-store 的 requireSessionDir() 读这个环境变量定位 <sessionDir>/.observer
+process.env.TCH_SOLVER_SESSION_DIR = sessionDir
 
-const sessionOpts = await config.resolvePromptSession(init.promptName)
-if (!sessionOpts) throw new Error(...)
-
-// 把 observer 工具加到 customTools
-const mergedOpts = {
-    ...sessionOpts,
-    customTools: [...(sessionOpts.customTools ?? []), ...observerTools],
+// resolvePromptSession 已返回带 customTools 的 CreateAgentSessionOptions
+// （见 config/index.ts：customTools 默认含 hostBridgeTools + challengeTools）
+const sessionOpts = await config.resolvePromptSession(init.promptName, [], workspaceDir)
+if (!sessionOpts) {
+    throw new Error(`prompt not found or disabled: ${init.promptName}`)
 }
 
+// 把 observer 工具并入 customTools（spread 不覆盖既有工具）
+const observerTools = createObserverSidecarTools()
+
 const { session } = await createAgentSession({
-    ...mergedOpts,
-    cwd: workspaceDir,
+    ...sessionOpts,
+    customTools: [...(sessionOpts.customTools ?? []), ...observerTools],
     sessionManager: SessionManager.create(workspaceDir, sessionDir),
 })
+await session.bindExtensions({})
 ```
 
-### 4.2 修改 resolvePromptSession 兼容
-
-确保 `resolvePromptSession` 不会覆盖 external customTools——上面的代码已经做了（mergedOpts 是 spread）。
+> 💡 **`resolvePromptSession` 无需改**：它本来就返回 `customTools`（默认 `[...hostBridgeTools, ...challengeTools]`），这里 spread 合并即可，不会覆盖。
+>
+> ⚠️ **环境变量是进程级**：`process.env.TCH_SOLVER_SESSION_DIR` 对单进程串行 solver（CLI 场景）成立；同一进程并发多 solver 时会互相覆盖——后续若需要并发，应改成把 `sessionDir` 闭包传进 `createObserverSidecarTools({ sessionDir })`（board-store 已支持显式 sessionDir 参数）。
+>
+> ⚠️ **主 solver 也能看到这些工具**：工具是全局注册的，主 solver 同样能调 `memory_*` / `idea_*`。本课暂不隔离，靠 prompt 约束（下节课写 observer contract）。
 
 ---
 
@@ -611,6 +625,18 @@ cat ~/.tinyfat/solvers/<id>/session/.observer/memory/entries/*.json
 bun run typecheck
 ```
 
+### 5.5 单元测试
+
+三个测试文件，覆盖表格渲染、board-store CRUD（含 env 兜底）、工具 execute 的 content/details：
+
+```bash
+bun test packages/core/src/solver/
+```
+
+- `board-format.test.ts`：空列表提示语、表头/字段列、refs 格式、超长裁剪、`|` 转义。
+- `board-store.test.ts`：路径解析、env 兜底与缺失抛错、memory/ideas CRUD（前缀匹配）、去重、搜索。
+- `tools.test.ts`：逐个 `memory_*` / `idea_*` 工具的 execute 返回；`createSendReminderTool` delivered true/false；`createObserverSidecarTools` 是否含 reminder。
+
 ---
 
 ## 第六步：故障排查
@@ -641,7 +667,7 @@ bun run typecheck
 
 - 实现 board-format（表格输出）
 - 实现 board-store（solver 本地存储适配）
-- 实现 Observer sidecar 工具集（10 个工具）
+- 实现 Observer sidecar 工具集（8 个 board 工具 + `send_efficiency_reminder` 工厂）
 - 注册到 createSolverSession
 
 📦 **新增文件**：
@@ -649,9 +675,13 @@ bun run typecheck
 ```
 packages/core/src/solver/extension/challenge-observer/
 ├── board-format.ts          ← Markdown 表格
-└── tools.ts                 ← Observer 工具集
+├── board-format.test.ts     ← 表格渲染测试
+├── tools.ts                 ← Observer 工具集
+└── tools.test.ts            ← 工具 execute 测试
 
-packages/core/src/solver/board-store.ts    ← solver 本地存储
+packages/core/src/solver/
+├── board-store.ts           ← solver 本地存储（challenge/memory 的 adapter）
+└── board-store.test.ts      ← board-store CRUD 测试
 ```
 
 🔑 **关键概念**：
@@ -664,6 +694,6 @@ packages/core/src/solver/board-store.ts    ← solver 本地存储
 
 ## 下一课预告
 
-[课时 18：Observer loop —— 触发 review](./18-observer-loop.md)（待生成）—— 让 Observer 自动按节奏 review solver 行为。
+[课时 18：Observer loop —— 触发 review](./18-observer-loop.md)—— 让 Observer 自动按节奏 review solver 行为。
 
 继续课时 18 →

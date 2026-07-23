@@ -35,9 +35,14 @@ packages/core/src/
       challenge-tools.ts            challenge_get_state / submit_flag / get_hint
     config-manager.test.ts          bun:test 单元测试
   solver/
-    session.ts                      createSolverSession（装配 AgentSession）
+    session.ts                      createSolverSession（装配 AgentSession，注入 TCH_SOLVER_SESSION_DIR + 注册 observer 工具）
     cli.ts                          runSolverCli（事件流 → stdout）
+    board-store.ts                  solver 本地策略板存储（<sessionDir>/.observer，challenge/memory 的 adapter）
+    board-store.test.ts             bun:test 单元测试
     rpc/                            Solver ↔ Host RPC 协议（init 握手 + host bridge）
+    extension/challenge-observer/   Observer sidecar 工具集（memory_* / idea_* / send_efficiency_reminder）
+      board-format.ts               ideas/memory → Markdown 表格
+      tools.ts                      defineTool 工具集（board 工具 + reminder 工厂）
   challenge/
     env.ts                          challenge 模式注入容器的环境变量名常量
     host-bridge-*.ts                Solver ↔ Host bridge（client / handler / types / challenge-handler）
