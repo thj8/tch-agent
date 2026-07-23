@@ -26,7 +26,7 @@ apps/cli/src/
 packages/core/src/
   index.ts                          对外 barrel 导出（含 DaemonManager 装配根：config + challenge + runtime）
   config/
-    index.ts                        ConfigManager 单例 + Provider/Model 偏好 CRUD + host-settings + resolvePromptSession（注册 host bridge / challenge 工具）
+    index.ts                        ConfigManager 单例 + Provider/Model 偏好 CRUD + host-settings + resolvePromptSession（注册 host bridge / challenge 工具；challenge 模式拼 system prompt 契约）
     types.ts                        AddResult / HostSettings / HostRuntimeSettings / HostChallengeSettings
     providers/types.ts              ProviderPrefEntry / ModelConfigEntry
     prompts/index.ts                Prompt 文件加载（YAML frontmatter + MD）
@@ -35,18 +35,20 @@ packages/core/src/
       challenge-tools.ts            challenge_get_state / submit_flag / get_hint
     config-manager.test.ts          bun:test 单元测试
   solver/
-    session.ts                      createSolverSession（装配 AgentSession，注入 TCH_SOLVER_SESSION_DIR + 注册 observer 工具）
+    session.ts                      createSolverSession（装配 AgentSession，注入 TCH_SOLVER_SESSION_DIR + 注册 observer 工具；challengeObserverExtension 装 observer/ralph factory）
     cli.ts                          runSolverCli（事件流 → stdout）
     board-store.ts                  solver 本地策略板存储（<sessionDir>/.observer，challenge/memory 的 adapter）
     board-store.test.ts             bun:test 单元测试
     rpc/                            Solver ↔ Host RPC 协议（init 握手 + host bridge）
-    extension/challenge-observer/   Observer sidecar（工具集 + loop）
+    extension/challenge-observer/   Observer sidecar（工具集 + loop + ralph 续跑）
       board-format.ts               ideas/memory → Markdown 表格
       tools.ts                      defineTool 工具集（board 工具 + reminder 工厂）
       types.ts                      ObserverToolLog / ObserverRoundPayload / ObserverReviewPayload
       observer-store.ts             运行时状态 + review 队列 + rounds 归档（<sessionDir>/.observer）
       observer-agent.ts             runSolverObserverReview（独立 LLM session 跑一次 review）
       observer-loop.ts              attachObserverLoop（事件 hook：周期/hint/agent_end 触发 review）
+      ralph-loop.ts                 attachChallengeContinuation（agent_end：未完成则退避 + 注入续跑消息，结束条件外置）
+      index.ts                      challengeObserverExtension 统一入口（打包 observer + ralph factory）+ systemPrompt 契约 + 再导出 isChallengeMode
   challenge/
     env.ts                          challenge 模式注入容器的环境变量名常量
     host-bridge-*.ts                Solver ↔ Host bridge（client / handler / types / challenge-handler）

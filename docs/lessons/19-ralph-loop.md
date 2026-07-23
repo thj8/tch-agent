@@ -102,10 +102,9 @@ agent_end (error) → 等 4s → 续跑
 新建 `packages/core/src/solver/extension/challenge-observer/ralph-loop.ts`：
 
 ```typescript
-import type { AgentMessage } from "@mariozechner/pi-agent-core"
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
-import { CHALLENGE_ENV_CHALLENGE_ID } from "../../../../challenge/env"
-import { requestHostBridge } from "../../../../challenge/host-bridge-client"
+import { CHALLENGE_ENV_CHALLENGE_ID } from "../../../challenge/env"
+import { requestHostBridge } from "../../../challenge/host-bridge-client"
 
 /** 连续 agent_end 失败的最大重试次数 */
 const MAX_CHALLENGE_RETRY_ATTEMPTS = 10
@@ -132,23 +131,35 @@ export function isChallengeMode(): boolean {
     return Boolean(process.env[CHALLENGE_ENV_CHALLENGE_ID]?.trim())
 }
 
+/** agent_end 消息里我们关心的字段（防御性结构，避免依赖 SDK 内部消息联合类型）。 */
+type AgentEndMessage = {
+    role?: string
+    stopReason?: string
+    errorMessage?: string
+}
+
 /**
  * 从 agent_end 的消息里提取最后的 assistant 错误信息。
+ *
+ * 用 `readonly unknown[]` + 内部防御性 cast，而不是直接导入 `AgentMessage`
+ * （`@mariozechner/pi-agent-core` 是 `pi-coding-agent` 的传递依赖，
+ * 在 `@my/core` 里作为顶层 import 解析不到）。这与 observer-loop/observer-agent
+ * 里 `event.message as { role?, content? }` 的防御性写法一致。
  */
-function getAgentEndError(messages: AgentMessage[]): string | undefined {
+export function getAgentEndError(messages: readonly unknown[]): string | undefined {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
-        const message = messages[i]!
-        if (message.role !== "assistant") continue
-        if (message.stopReason !== "error") return
+        const message = messages[i] as AgentEndMessage | undefined
+        if (message?.role !== "assistant") continue
+        if (message.stopReason !== "error") return undefined
         return message.errorMessage ?? "Agent ended with an unknown error"
     }
-    return
+    return undefined
 }
 
 /**
  * 指数退避：第 n 次失败后等待 BASE * 2^(n-1) ms，最多 MAX。
  */
-function getChallengeDelayMs(attempt: number): number {
+export function getChallengeDelayMs(attempt: number): number {
     return Math.min(
         BASE_CHALLENGE_DELAY_MS * 2 ** Math.max(attempt - 1, 0),
         MAX_CHALLENGE_DELAY_MS,
@@ -182,12 +193,22 @@ async function isChallengeCompletedByHostBridge(): Promise<boolean> {
  *
  * @param pi pi-coding-agent 的 ExtensionAPI
  */
-export function attachChallengeContinuation(pi: ExtensionAPI): void {
+export function attachChallengeContinuation(
+    pi: ExtensionAPI,
+    options: {
+        /** 覆盖完成判定（单测用）；默认走 host bridge。 */
+        isChallengeCompleted?: () => Promise<boolean>
+        /** 覆盖退避 sleep（单测用）；默认 Bun.sleep。 */
+        sleep?: (ms: number) => Promise<void>
+    } = {},
+): void {
     let consecutiveErrors = 0
+    const isChallengeCompleted = options.isChallengeCompleted ?? isChallengeCompletedByHostBridge
+    const sleep = options.sleep ?? ((ms: number) => Bun.sleep(ms))
 
     pi.on("agent_end", async (event) => {
         // 1. challenge 完成 → 真正退出
-        if (await isChallengeCompletedByHostBridge()) {
+        if (await isChallengeCompleted()) {
             console.log("[ralph] challenge completed, exiting loop")
             return
         }
@@ -203,7 +224,7 @@ export function attachChallengeContinuation(pi: ExtensionAPI): void {
             }
             const delay = getChallengeDelayMs(consecutiveErrors)
             console.log(`[ralph] backing off for ${delay}ms`)
-            await Bun.sleep(delay)
+            await sleep(delay)
         } else {
             // 上一轮正常结束（模型自己说停）→ 清零错误计数
             consecutiveErrors = 0
@@ -263,36 +284,24 @@ function getChallengeDelayMs(attempt: number): number {
 ### 2.1 修改 packages/core/src/solver/session.ts
 
 ```typescript
-// 顶部加 import
-import { attachChallengeContinuation, isChallengeMode } from "./extension/challenge-observer/ralph-loop"
+// 顶部 import 换成统一入口（封装了 observer loop + ralph loop 两段 factory）
+import { challengeObserverExtension } from "./extension/challenge-observer/index"
 
-// 在 createSolverSession 里，收集 extensionFactories 然后传给 resolvePromptSession：
-const extensionFactories: ExtensionFactory[] = []
+// 在 createSolverSession 里：
+// challengeObserverExtension 根据是否 challenge 模式（isChallengeMode）
+// 决定挂几段 factory：observer loop 始终挂，ralph loop 仅 challenge 模式挂。
+// observerModel 从 init 线程传入（session.ts 看不到 prompt.meta，
+// 这是 lesson 18 已确立的边界）。
+const { factories } = challengeObserverExtension({ observerModel: init.observerModel })
 
-// 始终挂 observer loop（上一节课）
-extensionFactories.push((pi) => {
-    console.log("[session] observer extension attached")
-    attachObserverLoop(pi, {
-        observerModel: prompt.meta.observerModel ?? prompt.meta.model,
-    })
-})
-
-// challenge 模式下挂 ralph loop（强制续跑）
-if (isChallengeMode()) {
-    extensionFactories.push((pi) => {
-        console.log("[session] ralph loop attached")
-        attachChallengeContinuation(pi)
-    })
-}
-
-// ⚠️ 关键：把 extensionFactories 传给 resolvePromptSession
+// ⚠️ 关键：把 factories 传给 resolvePromptSession
 // （SDK 规定 extensions 通过 DefaultResourceLoader 注入，不直接传给 createAgentSession）
-const sessionOpts = await config.resolvePromptSession(init.promptName, extensionFactories)
-if (!sessionOpts) throw new Error(`prompt not found: ${init.promptName}`)
+const sessionOpts = await config.resolvePromptSession(init.promptName, factories, workspaceDir)
+if (!sessionOpts) throw new Error(`prompt not found or disabled: ${init.promptName}`)
 
 const { session } = await createAgentSession({
     ...sessionOpts,
-    cwd: workspaceDir,
+    customTools: [...(sessionOpts.customTools ?? []), ...createObserverSidecarTools()],
     sessionManager: SessionManager.create(workspaceDir, sessionDir),
 })
 // bindExtensions 时 SDK 依次调各 factory(pi)，hook 才真正挂上
@@ -315,6 +324,11 @@ await session.bindExtensions({})
 
 ```typescript
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent"
+import { attachObserverLoop } from "./observer-loop"
+import { attachChallengeContinuation, isChallengeMode } from "./ralph-loop"
+
+// 统一再导出，供 config/session 等装配方判断 challenge 模式。
+export { isChallengeMode }
 
 /**
  * 注入到 Solver system prompt 的 challenge 契约说明。
@@ -332,21 +346,32 @@ export function buildChallengeExtensionAppendPrompt(): string {
 }
 
 /**
- * 装配 challenge-observer 扩展（统一入口）。
+ * challenge-observer 扩展统一入口：把两段扩展装配打包在一起。
+ *   - observer loop（始终挂：周期 / hint / agent_end 触发策略板 review）
+ *   - ralph loop（仅 challenge 模式挂：强制续跑）
  */
 export function challengeObserverExtension(options: {
     observerModel?: string
 }): {
-    factory: ExtensionFactory
+    factories: ExtensionFactory[]
     appendSystemPrompt: () => string
 } {
-    const factory: ExtensionFactory = (pi) => {
-        // 这里不做实际 hook（由 createSolverSession 单独 attach）
-        // 留作未来扩展点
+    const factories: ExtensionFactory[] = [
+        (pi) => {
+            console.log("[session] observer extension attached")
+            attachObserverLoop(pi, { observerModel: options.observerModel })
+        },
+    ]
+
+    if (isChallengeMode()) {
+        factories.push((pi) => {
+            console.log("[session] ralph loop attached")
+            attachChallengeContinuation(pi)
+        })
     }
 
     return {
-        factory,
+        factories,
         appendSystemPrompt: () => buildChallengeExtensionAppendPrompt(),
     }
 }
@@ -357,22 +382,25 @@ export function challengeObserverExtension(options: {
 修改 `packages/core/src/config/index.ts`：
 
 ```typescript
-// 顶部加 import
-import { buildChallengeExtensionAppendPrompt } from "../solver/extension/challenge-observer/index"
-import { isChallengeMode } from "../solver/extension/challenge-observer/ralph-loop"
+// 顶部 import（isChallengeMode 由 challenge-observer/index 再导出）
+import {
+    buildChallengeExtensionAppendPrompt,
+    isChallengeMode,
+} from "../solver/extension/challenge-observer/index"
 
 // 在 resolvePromptSession 里，组装 systemPromptOverride 时：
-const isChallenge = isChallengeMode()
-const challengePrompt = isChallenge ? buildChallengeExtensionAppendPrompt() : ""
+// （注意：config → solver 是一条新的 import 边，与既有的 solver → config 形成环。
+//  安全：两个函数都只在 resolvePromptSession 运行时调用，模块加载期不访问。）
+const challengeAppend = isChallengeMode() ? buildChallengeExtensionAppendPrompt() : ""
 
 const resourceLoader = new DefaultResourceLoader({
+    cwd,
     agentDir: this.dir,
-    systemPromptOverride: () => {
-        const parts = [prompt.content]
-        if (challengePrompt) parts.push(challengePrompt)
-        return parts.join("\n\n")
-    },
+    systemPromptOverride: () =>
+        challengeAppend ? `${prompt.content}\n\n${challengeAppend}` : prompt.content,
+    extensionFactories: extensions,
 })
+await resourceLoader.reload()
 ```
 
 ---
@@ -493,8 +521,9 @@ bun run typecheck
 
 ```
 packages/core/src/solver/extension/challenge-observer/
-├── ralph-loop.ts          ← 强制续跑
-└── index.ts               ← 出口 + systemPrompt 契约
+├── ralph-loop.ts          ← 强制续跑（agent_end hook + 退避 + 注入续跑消息）
+├── ralph-loop.test.ts     ← 14 个单测（纯函数 + fake pi 全分支）
+└── index.ts               ← 统一入口 challengeObserverExtension（打包 observer + ralph）+ systemPrompt 契约
 ```
 
 🔑 **关键概念**：
