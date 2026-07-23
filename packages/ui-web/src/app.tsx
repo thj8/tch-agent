@@ -4,11 +4,13 @@ import type { LucideIcon } from "lucide-react"
 import { ApiKeysPage } from "./pages/api-keys"
 import { ModelPrefsPage } from "./pages/model-prefs"
 import { ProvidersPage } from "./pages/providers"
+import { SolverDetailPage } from "./pages/solver-detail"
 import { SolversPage } from "./pages/solvers"
 
-type Page = "solvers" | "api-keys" | "providers" | "model-prefs"
+type NavPage = "solvers" | "api-keys" | "providers" | "model-prefs"
+type Page = NavPage | { type: "solver-detail"; id: string }
 
-const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
+const NAV: { id: NavPage; label: string; icon: LucideIcon }[] = [
     { id: "solvers", label: "Solvers", icon: Server },
     { id: "api-keys", label: "API Keys", icon: KeyRound },
     { id: "providers", label: "Providers", icon: Boxes },
@@ -19,22 +21,36 @@ export function App() {
     const [page, setPage] = useState<Page>(() => {
         if (typeof window === "undefined") return "solvers"
         const hash = window.location.hash.replace("#", "")
-        return (NAV.find((n) => n.id === hash)?.id ?? "solvers") as Page
+        // solver 详情页用 #solver/<id> 编码，支持刷新/深链
+        if (hash.startsWith("solver/")) {
+            const id = hash.slice("solver/".length)
+            if (id) return { type: "solver-detail", id }
+        }
+        return NAV.find((n) => n.id === hash)?.id ?? "solvers"
     })
 
     function navigate(p: Page) {
         setPage(p)
-        if (typeof window !== "undefined") window.location.hash = p
+        if (typeof window !== "undefined") {
+            window.location.hash = typeof p === "string" ? p : `solver/${p.id}`
+        }
     }
 
     return (
         <div className="flex h-screen bg-background text-foreground">
             <Sidebar page={page} onChange={navigate} />
             <main className="flex-1 overflow-auto">
-                {page === "solvers" && <SolversPage />}
+                {page === "solvers" && (
+                    <SolversPage
+                        onSelectSolver={(id) => navigate({ type: "solver-detail", id })}
+                    />
+                )}
                 {page === "api-keys" && <ApiKeysPage />}
                 {page === "providers" && <ProvidersPage />}
                 {page === "model-prefs" && <ModelPrefsPage />}
+                {typeof page === "object" && page.type === "solver-detail" && (
+                    <SolverDetailPage solverId={page.id} onBack={() => navigate("solvers")} />
+                )}
             </main>
         </div>
     )

@@ -8,7 +8,7 @@ import {
 } from "../components/ui"
 import type { SolverInfo } from "../lib/types"
 
-export function SolversPage() {
+export function SolversPage({ onSelectSolver }: { onSelectSolver?: (id: string) => void }) {
     const [solvers, setSolvers] = useState<SolverInfo[]>([])
     const [dockerOk, setDockerOk] = useState<boolean | null>(null)
     const [loading, setLoading] = useState(true)
@@ -88,7 +88,10 @@ export function SolversPage() {
                             {solvers.map((s) => (
                                 <tr
                                     key={s.id}
-                                    className="border-b border-border-subtle last:border-0 hover:bg-surface-hover transition-colors"
+                                    onClick={() => onSelectSolver?.(s.id)}
+                                    className={`border-b border-border-subtle last:border-0 hover:bg-surface-hover transition-colors${
+                                        onSelectSolver ? " cursor-pointer" : ""
+                                    }`}
                                 >
                                     <td className="px-4 py-3 font-mono text-sm text-foreground">
                                         {s.id}

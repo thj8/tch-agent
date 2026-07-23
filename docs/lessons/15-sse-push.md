@@ -89,6 +89,11 @@ data: {"type":"tool_call",...}
 
 ## 第一步：实现 RuntimeManager 的事件总线
 
+> ⚠️ **已在课时 7 完成**：`RuntimeManager` 早就有事件总线——`eventHandlers` 字段、
+> `onEvent(handler)`、`emit(solverId, event)`，并且 `readStream` 已经把容器 stdout 的
+> 每行 JSON 解析成 `AgentSessionEvent` 后调 `emit` 扇出（见 `runtime.ts` 的 `onEvent` /
+> `emit` / `readStream`）。**本课无需改 `runtime.ts`**，下面 1.1 / 1.2 仅作回顾。
+
 ### 1.1 修改 packages/core/src/runtime/runtime.ts
 
 ```typescript
@@ -133,6 +138,12 @@ if (line) {
 ---
 
 ## 第二步：实现 server.ts 的 SSE 基础设施
+
+> 注：课时 10 已建好 `server.ts`（api-keys / providers / model-prefs / prompts / solvers /
+> ping 路由都在）。本步是**往现有 `startWeb` 里合并** SSE 基础设施 + 两个 SSE 路由，
+> **不要替换**已有路由。另外 `encodeSse` 提成独立纯函数 `packages/ui-web/src/sse.ts`
+> （+ 单元测试 `sse.test.ts`），`server.ts` 里 `import { encodeSse } from "./sse"`，
+> `AgentSessionEvent` 类型从 SDK `import type` 进来。
 
 修改 `packages/ui-web/src/server.ts`：
 
@@ -354,6 +365,14 @@ export async function startWeb(options: WebServerOptions = {}): Promise<void> {
 
 ## 第三步：前端 EventSource
 
+> 注：实际按项目 `pages/` + `lib/` 惯例拆开——`SolverDetailPage` 单独在
+> `packages/ui-web/src/pages/solver-detail.tsx`；`summarizeEvent` 一族在
+> `packages/ui-web/src/lib/event-summary.ts`（+ 单元测试），**镜像
+> `apps/cli/src/event-summary.ts` 的事件形状**（CLI 版返回 `string|null` 过滤，web 版
+> 总是返回 string 全显示）。下面代码示意逻辑，落盘位置以这两文件为准。两个易错点：
+> `agent_end` 的 stopReason 在 `event.messages` 末尾的 assistant 消息里（不是
+> `event.stopReason`）；`tool_execution_end` 用 `event.result` 做预览。
+
 修改 `packages/ui-web/src/app.tsx`，加 Solver 详情页：
 
 ```typescript
@@ -456,8 +475,12 @@ function summarizeArgs(args: unknown): string {
 
 加路由跳转（修改 App 的 page 类型）：
 
+> 实际实现：导航页拆出 `type NavPage = "solvers" | "api-keys" | "providers" | "model-prefs"`，
+> `type Page = NavPage | { type: "solver-detail"; id: string }`；详情页用 `#solver/<id>`
+> 编码进 hash（支持刷新/深链）；`SolversPage` 加 `onSelectSolver?: (id) => void` prop 让行可点。
+
 ```typescript
-type Page = "api-keys" | "solvers" | { type: "solver-detail"; id: string }
+type Page = NavPage | { type: "solver-detail"; id: string }
 
 // 在 SolversPage 的 table 里加点击：
 <tr
@@ -510,11 +533,15 @@ bun run apps/cli/src/main.ts runtime launch --prompt SOLVER "ls /tmp"
 
 开两个浏览器 tab 同时看一个 solver，两边都收到事件。
 
-### 4.5 类型检查
+### 4.5 类型检查 + 单元测试
 
 ```bash
 bun run typecheck
+bun test packages/ui-web/src/sse.test.ts packages/ui-web/src/lib/event-summary.test.ts
 ```
+
+两个纯函数模块有单测覆盖：`encodeSse`（SSE wire format）+ `summarizeEvent`（事件形状，
+镜像 CLI 的 event-summary）。SSE 连接本身按 4.1-4.4 手动验证。
 
 ---
 
