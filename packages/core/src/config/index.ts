@@ -17,6 +17,10 @@ import type { ModelConfigEntry, ProviderPrefEntry } from "./providers/types"
 import type { AddResult, HostSettings } from "./types"
 import { hostBridgeTools } from "./tools/host-bridge-tools"
 import { challengeTools } from "./tools/challenge-tools"
+import {
+  buildChallengeExtensionAppendPrompt,
+  isChallengeMode,
+} from "../solver/extension/challenge-observer/index"
 
 // 用户主目录下的配置根目录：~/.tinyfat/
 export const TCH_AGENT_HOME_DIR = resolve(homedir(), ".tinyfat")
@@ -486,11 +490,15 @@ You are a helpful agent that solves tasks step by step.
     }
 
     // 3. 装配 ResourceLoader（systemPrompt + extensions）
-    //    SDK 规定：extensions 必须通过 ResourceLoader 注入
+    //    SDK 规定：extensions 必须通过 ResourceLoader 注入。
+    //    challenge 模式（lesson 19）下，把 challenge 契约拼到 system prompt 末尾，
+    //    让 solver 知道"会被强制续跑 + 会收到协作同步"。
+    const challengeAppend = isChallengeMode() ? buildChallengeExtensionAppendPrompt() : ""
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir: this.dir,
-      systemPromptOverride: () => prompt.content,
+      systemPromptOverride: () =>
+        challengeAppend ? `${prompt.content}\n\n${challengeAppend}` : prompt.content,
       extensionFactories: extensions,
     })
     await resourceLoader.reload()
