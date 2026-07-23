@@ -13,6 +13,7 @@ import { registerConfigCommands } from "./commands/config"
 import { registerSolverCommands } from "./commands/solver"
 import { registerRuntimeCommands } from "./commands/runtime"
 import { registerChallengeCommands } from "./commands/challenge"
+import { registerMemoryCommands } from "./commands/memory"
 import { registerSettingsCommands } from "./commands/settings"
 
 // 全局兜底：未捕获的异步错误直接打 stack 退出，避免静默挂死。
@@ -37,6 +38,7 @@ async function main() {
   registerSolverCommands(program)   // solver (run / rpc)
   registerRuntimeCommands(program)  // runtime (ping / build-image / has-image / launch / list)
   registerChallengeCommands(program) // challenge (create / list / show / append-attempt / list-attempts)
+  registerMemoryCommands(program)    // memory / idea (策略板 CRUD)
   registerSettingsCommands(program)  // settings (show / set)
 
   await program.parseAsync(process.argv)

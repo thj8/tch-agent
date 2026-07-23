@@ -29,6 +29,16 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent"
 import { Type } from "typebox"
 import type { TSchema } from "typebox"
 import type { SolverInstance } from "../runtime/types"
+import * as memory from "./memory"
+import type {
+    AddIdeaInput,
+    AddIdeaResult,
+    AddMemoryInput,
+    IdeaRecord,
+    MemoryEntry,
+    MemoryKind,
+    UpdateIdeaInput,
+} from "./memory"
 
 /**
  * 提交 flag 时的元数据。
@@ -743,6 +753,61 @@ export class ChallengeManager {
     async listAttemptLogs(challengeId: string): Promise<ChallengeAttemptLogRecord[]> {
         const rootDir = await this.getRootDir()
         return listChallengeAttemptLogs(rootDir, challengeId)
+    }
+
+    // ── ideas + memory（lesson 16：策略板）──────────────────
+
+    async appendMemory(input: AddMemoryInput): Promise<MemoryEntry> {
+        const rootDir = await this.getRootDir()
+        return memory.appendChallengeMemory(rootDir, input)
+    }
+
+    async updateMemory(
+        challengeId: string,
+        entryIdOrPrefix: string,
+        patch: { kind?: MemoryKind; content?: string; refs?: string[]; source?: string },
+    ): Promise<MemoryEntry> {
+        const rootDir = await this.getRootDir()
+        return memory.updateChallengeMemory(rootDir, challengeId, entryIdOrPrefix, patch)
+    }
+
+    async deleteMemory(challengeId: string, entryIdOrPrefix: string): Promise<MemoryEntry> {
+        const rootDir = await this.getRootDir()
+        return memory.deleteChallengeMemory(rootDir, challengeId, entryIdOrPrefix)
+    }
+
+    async listMemory(challengeId: string): Promise<MemoryEntry[]> {
+        const rootDir = await this.getRootDir()
+        return memory.listChallengeMemory(rootDir, challengeId)
+    }
+
+    async listIdeas(challengeId: string): Promise<IdeaRecord[]> {
+        const rootDir = await this.getRootDir()
+        return memory.listChallengeIdeas(rootDir, challengeId)
+    }
+
+    async searchIdeas(challengeId: string, query: string): Promise<IdeaRecord[]> {
+        const rootDir = await this.getRootDir()
+        return memory.searchChallengeIdeas(rootDir, challengeId, query)
+    }
+
+    async addIdea(challengeId: string, input: AddIdeaInput): Promise<AddIdeaResult> {
+        const rootDir = await this.getRootDir()
+        return memory.addChallengeIdea(rootDir, challengeId, input)
+    }
+
+    async updateIdea(
+        challengeId: string,
+        ideaIdOrPrefix: string,
+        patch: UpdateIdeaInput,
+    ): Promise<IdeaRecord> {
+        const rootDir = await this.getRootDir()
+        return memory.updateChallengeIdea(rootDir, challengeId, ideaIdOrPrefix, patch)
+    }
+
+    async deleteIdea(challengeId: string, ideaIdOrPrefix: string): Promise<IdeaRecord> {
+        const rootDir = await this.getRootDir()
+        return memory.deleteChallengeIdea(rootDir, challengeId, ideaIdOrPrefix)
     }
 }
 
