@@ -303,9 +303,11 @@ export interface ObserverReviewPayload {
 新建 `packages/core/src/solver/extension/challenge-observer/observer-agent.ts`：
 
 ```typescript
+import { mkdir } from "node:fs/promises"
+import { join } from "node:path"
 import { DefaultResourceLoader, SessionManager, createAgentSession } from "@mariozechner/pi-coding-agent"
 import type { CreateAgentSessionOptions } from "@mariozechner/pi-coding-agent"
-import { ConfigManager, DEFAULT_CONFIG_DIR } from "../../../../config/index"
+import { ConfigManager, DEFAULT_CONFIG_DIR } from "../../../config/index"
 import { createObserverSidecarTools } from "./tools"
 import type { ObserverReviewPayload } from "./types"
 
@@ -406,7 +408,7 @@ function buildObserverPrompt(payload: ObserverReviewPayload): string {
  * @param options.sendCorrectionNotice  给 solver 发纠偏的回调
  */
 export async function runSolverObserverReview(
-    challengeId: string,
+    _challengeId: string,
     payload: ObserverReviewPayload,
     options: {
         observerModel?: string
@@ -418,8 +420,17 @@ export async function runSolverObserverReview(
 
     const config = await ConfigManager.getInstance()
 
+    // observer session 目录（与 board 同根：<sessionDir>/.observer）
+    const solverSessionDir = process.env.TCH_SOLVER_SESSION_DIR?.trim()
+    if (!solverSessionDir) throw new Error("TCH_SOLVER_SESSION_DIR required")
+    const observerSessionDir = join(solverSessionDir, ".observer")
+    const observerWorkspaceDir = process.env.TCH_SOLVER_WORKSPACE?.trim() ?? solverSessionDir
+    await mkdir(observerSessionDir, { recursive: true })
+
     // 装配 session options（用 OBSERVER_SYSTEM_PROMPT，不挂主 solver 的工具）
+    // ⚠️ DefaultResourceLoader 的 cwd / agentDir 都是必填，不能省 cwd
     const resourceLoader = new DefaultResourceLoader({
+        cwd: observerWorkspaceDir,
         agentDir: DEFAULT_CONFIG_DIR,
         systemPromptOverride: () => OBSERVER_SYSTEM_PROMPT,
     })
@@ -447,15 +458,6 @@ export async function runSolverObserverReview(
         }
     }
 
-    // observer session 目录
-    const solverSessionDir = process.env.TCH_SOLVER_SESSION_DIR?.trim()
-    if (!solverSessionDir) throw new Error("TCH_SOLVER_SESSION_DIR required")
-    const observerSessionDir = `${solverSessionDir}/.observer`
-    const observerWorkspaceDir = process.env.TCH_SOLVER_WORKSPACE?.trim() ?? solverSessionDir
-
-    const { mkdir } = await import("node:fs/promises")
-    await mkdir(observerSessionDir, { recursive: true })
-
     const { session } = await createAgentSession({
         ...opts,
         cwd: observerWorkspaceDir,
@@ -464,17 +466,19 @@ export async function runSolverObserverReview(
 
     let summary = ""
     session.subscribe((event) => {
-        if (event.type === "message_end" && event.message?.role === "assistant") {
-            const content = event.message.content
-            if (Array.isArray(content)) {
-                summary = content
-                    .filter(
-                        (c): c is { type: "text"; text: string } =>
-                            !!c && typeof c === "object" && (c as { type?: string }).type === "text",
-                    )
-                    .map((c) => c.text)
-                    .join("")
-            }
+        if (event.type !== "message_end") return
+        // AgentMessage 是联合类型（含 custom message），用宽松 cast 安全取 role/content
+        const message = event.message as { role?: string; content?: unknown } | undefined
+        if (message?.role !== "assistant") return
+        const content = message.content
+        if (Array.isArray(content)) {
+            summary = content
+                .filter(
+                    (c): c is { type: "text"; text: string } =>
+                        !!c && typeof c === "object" && (c as { type?: string }).type === "text",
+                )
+                .map((c) => c.text)
+                .join("")
         }
     })
 
@@ -497,7 +501,7 @@ export async function runSolverObserverReview(
 新建 `packages/core/src/solver/extension/challenge-observer/observer-loop.ts`：
 
 ```typescript
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
 import { runSolverObserverReview } from "./observer-agent"
 import {
     enqueueObserverReview,
@@ -586,10 +590,23 @@ function extractAssistantSummary(content: unknown): string {
  *   - message_end (assistant) → 封口当前轮 + 决定是否 review
  *   - agent_end            → 末轮 review
  */
+/** review 执行器类型（可注入，便于测试） */
+type ReviewRunner = typeof runSolverObserverReview
+
+export interface AttachObserverLoopOptions {
+    observerModel?: string
+    /** 可选：注入自定义 review 执行器（测试用；默认 runSolverObserverReview） */
+    runReview?: ReviewRunner
+    /** 可选：注入自定义 hint 工具名判定（测试用） */
+    hintToolName?: string
+}
+
 export function attachObserverLoop(
     pi: ExtensionAPI,
-    options: { observerModel?: string } = {},
+    options: AttachObserverLoopOptions = {},
 ): void {
+    const runReview: ReviewRunner = options.runReview ?? runSolverObserverReview
+    const hintToolName = options.hintToolName ?? "challenge_get_hint"
     let reviewRunning = false
 
     // 启动时对齐轮号
@@ -615,7 +632,7 @@ export function attachObserverLoop(
                 const next = await takeNextObserverReview()
                 if (!next) return
                 try {
-                    await runSolverObserverReview("challenge", next, {
+                    await runReview("challenge", next, {
                         observerModel: options.observerModel,
                         // 简化：本课时不发 reminder
                     })
@@ -676,7 +693,7 @@ export function attachObserverLoop(
                     tool_args_by_call_id: nextArgs,
                     // challenge_get_hint 成功 → 强制 review
                     force_review_reason:
-                        !event.isError && event.toolName === "challenge_get_hint"
+                        !event.isError && event.toolName === hintToolName
                             ? "hint"
                             : state.force_review_reason,
                 },
@@ -687,14 +704,13 @@ export function attachObserverLoop(
 
     // ── Hook 3: message_end (assistant) ──────────────
 
-    pi.on("message_end", async (event, _ctx: ExtensionContext) => {
-        if (event.message?.role !== "assistant") return
+    pi.on("message_end", async (event) => {
+        // AgentMessage 是联合类型，宽松 cast 安全取 role/content
+        const message = event.message as { role?: string; content?: unknown } | undefined
+        if (message?.role !== "assistant") return
         await roundStateReady
 
-        const assistantSummary =
-            "content" in event.message
-                ? extractAssistantSummary(event.message.content)
-                : ""
+        const assistantSummary = message.content ? extractAssistantSummary(message.content) : ""
 
         const { roundRecord, reviewReason } = await updateObserverState((state) => {
             const nextRound = state.round + 1
@@ -761,33 +777,52 @@ export function attachObserverLoop(
 
 ### 4.1 修改 packages/core/src/solver/session.ts
 
+Observer loop 通过 `ExtensionFactory` 注入。SDK 的 `createAgentSession` **不直接接收 extensions**，正确路径是：把 factory 传给 `resolvePromptSession(name, extensions)` → ConfigManager 交给 `DefaultResourceLoader({ extensionFactories })` → `session.bindExtensions({})` 时 SDK 依次调用各 `factory(pi)` → `pi.on(...)` 挂钩生效。
+
 ```typescript
 // 顶部加 import
+import type { AgentSession, ExtensionFactory } from "@mariozechner/pi-coding-agent"
 import { attachObserverLoop } from "./extension/challenge-observer/observer-loop"
 
-// 在 createSolverSession 里装配：
+// createSolverSession 的 init 加一个可选字段（observer 用什么 model）
+export async function createSolverSession(init: {
+  solverId: string
+  promptName: string
+  task: string
+  /** Observer sidecar 用的 model pref id（可选；省略则 observer 用 SDK 默认 model） */
+  observerModel?: string
+}): Promise<SolverSession> {
+  // ...（mkdir + TCH_SOLVER_SESSION_DIR 注入，见 lesson 17）
 
-// 把 observer factory 通过 resolvePromptSession 的 extensions 参数传进去
-// （SDK 的 createAgentSession 本身不接收 extensions，要传给 ResourceLoader）
-const observerFactory: ExtensionFactory = (pi) => {
-    console.log("[session] observer extension attached")
-    attachObserverLoop(pi, {
-        observerModel: prompt.meta.observerModel ?? prompt.meta.model,
-    })
-}
+  // observer factory：闭包捕获 observerModel
+  const observerFactory: ExtensionFactory = (pi) => {
+    attachObserverLoop(pi, { observerModel: init.observerModel })
+  }
 
-// 调 resolvePromptSession 时把 factory 传进去：
-const sessionOpts = await config.resolvePromptSession(init.promptName, [observerFactory])
-if (!sessionOpts) throw new Error(...)
+  // 把 factory 传给 resolvePromptSession（第二个参数 = ExtensionFactory[]）
+  const sessionOpts = await config.resolvePromptSession(
+    init.promptName,
+    [observerFactory],
+    workspaceDir,
+  )
+  if (!sessionOpts) {
+    throw new Error(`prompt not found or disabled: ${init.promptName}`)
+  }
 
-const { session } = await createAgentSession({
+  // ...（customTools 并入 observer 工具，见 lesson 17）
+  const { session } = await createAgentSession({
     ...sessionOpts,
-    cwd: workspaceDir,
+    customTools: [...(sessionOpts.customTools ?? []), ...createObserverSidecarTools()],
     sessionManager: SessionManager.create(workspaceDir, sessionDir),
-})
-// bindExtensions 触发 factory 注册 hook（observer 的 pi.on 在此刻挂上）
-await session.bindExtensions({})
+  })
+  // bindExtensions 触发 factory 注册 hook（observer 的 pi.on 在此刻挂上）
+  await session.bindExtensions({})
+
+  return { session, sessionDir, workspaceDir }
+}
 ```
+
+> ⚠️ **observerModel 从哪来**：原稿写 `prompt.meta.observerModel`，但 `session.ts` 里看不到 prompt（`resolvePromptSession` 内部才加载 prompt）。改成给 `createSolverSession` 的 `init` 加可选 `observerModel` 字段，由调用方（`runSolverCli` / 后续 CLI flag）传入；省略时 observer 用 SDK 默认 model。
 
 > ⚠️ **关键**：SDK 的 `createAgentSession` **不直接接收 extensions**。
 > 正确流程：
@@ -796,11 +831,7 @@ await session.bindExtensions({})
 > 3. `session.bindExtensions({})` 时 SDK 才依次调用各 factory(pi)
 > 4. factory 内部 `pi.on("tool_execution_end", ...)` 等订阅生效
 
-### 4.2 加 ExtensionFactory import
-
-```typescript
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent"
-```
+> 💡 `ExtensionFactory` 类型已合进 §4.1 顶部的 `import type { AgentSession, ExtensionFactory }`。
 
 ---
 
@@ -858,6 +889,18 @@ bun run apps/cli/src/main.ts runtime launch --prompt SOLVER \
 bun run typecheck
 ```
 
+### 5.5 单元测试
+
+三个测试文件（不依赖 LLM/API key）：
+
+```bash
+bun test packages/core/src/solver/extension/challenge-observer/
+```
+
+- `observer-store.test.ts`：state 读改写、review 队列 FIFO、rounds 归档 + `loadLatestObserverRoundNumber`。
+- `observer-agent.test.ts`：`OBSERVER_SYSTEM_PROMPT` 关键契约；`buildObserverPrompt` 工具日志 / `[error]` / `(none)` / `(empty)` / 轮数 header。
+- `observer-loop.test.ts`：用伪造 `ExtensionAPI`（只实现 `on`）+ 注入 `runReview` stub 驱动事件流，验证周期（每 6 轮）/ hint 强制 / `agent_end` / 工具日志配对，**全程不调真实 LLM**（`runReview` 可注入是为此服务）。
+
 ---
 
 ## 第六步：故障排查
@@ -884,7 +927,7 @@ bun run typecheck
 
 **原因**：observer model 没配 / 没注册。
 
-**解决**：检查 prompt.meta.observerModel 配置；或省略让 SDK 用默认。
+**解决**：检查 `createSolverSession` 的 `observerModel` 参数（对应一条 model pref id）；或省略让 SDK 用默认。
 
 ---
 
@@ -902,10 +945,13 @@ bun run typecheck
 
 ```
 packages/core/src/solver/extension/challenge-observer/
-├── types.ts              ← 数据类型
-├── observer-store.ts     ← 状态/队列/轮次存储
-├── observer-agent.ts     ← 跑一次 review
-└── observer-loop.ts      ← 事件 hook + 触发逻辑
+├── types.ts                 ← 数据类型
+├── observer-store.ts        ← 状态/队列/轮次存储
+├── observer-store.test.ts   ← 存储层单元测试
+├── observer-agent.ts        ← 跑一次 review
+├── observer-agent.test.ts   ← prompt 构造单元测试
+├── observer-loop.ts         ← 事件 hook + 触发逻辑
+└── observer-loop.test.ts    ← 触发节奏集成测试（fake pi + stub review）
 ```
 
 🔑 **关键概念**：
@@ -919,6 +965,6 @@ packages/core/src/solver/extension/challenge-observer/
 
 ## 下一课预告
 
-[课时 19：Ralph Loop（强制续跑）](./19-ralph-loop.md)（待生成）—— 让 solver 不让自己说停就停。
+[课时 19：Ralph Loop（强制续跑）](./19-ralph-loop.md)—— 让 solver 不让自己说停就停。
 
 继续课时 19 →

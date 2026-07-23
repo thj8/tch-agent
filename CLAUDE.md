@@ -40,9 +40,13 @@ packages/core/src/
     board-store.ts                  solver 本地策略板存储（<sessionDir>/.observer，challenge/memory 的 adapter）
     board-store.test.ts             bun:test 单元测试
     rpc/                            Solver ↔ Host RPC 协议（init 握手 + host bridge）
-    extension/challenge-observer/   Observer sidecar 工具集（memory_* / idea_* / send_efficiency_reminder）
+    extension/challenge-observer/   Observer sidecar（工具集 + loop）
       board-format.ts               ideas/memory → Markdown 表格
       tools.ts                      defineTool 工具集（board 工具 + reminder 工厂）
+      types.ts                      ObserverToolLog / ObserverRoundPayload / ObserverReviewPayload
+      observer-store.ts             运行时状态 + review 队列 + rounds 归档（<sessionDir>/.observer）
+      observer-agent.ts             runSolverObserverReview（独立 LLM session 跑一次 review）
+      observer-loop.ts              attachObserverLoop（事件 hook：周期/hint/agent_end 触发 review）
   challenge/
     env.ts                          challenge 模式注入容器的环境变量名常量
     host-bridge-*.ts                Solver ↔ Host bridge（client / handler / types / challenge-handler）
