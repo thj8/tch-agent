@@ -82,7 +82,7 @@ packages/ui-web/       Web UI（@my/ui-web）
   src/index.html       前端入口
   src/app.tsx          sidebar + hash 路由
   src/components/      共享 UI（Modal / PageHeader / Button / ...）
-  src/pages/           api-keys / providers / model-prefs / solvers
+  src/pages/           api-keys / providers / model-prefs / solvers / solver-detail / timeline
 ```
 
 ## 配置目录
@@ -192,9 +192,10 @@ tinyfat web
 # → 🌐 Web UI running at http://127.0.0.1:3000
 ```
 
-深色 Dashboard，四个页面：
+深色 Dashboard，五个页面：
 
 - **Solvers**：当前活跃容器列表 + Docker 状态（每 2s 轮询）
+- **Timeline**：attack timeline —— 聚合 attempts / submissions / 策略板（memory/ideas）的升序事件流（按 challenge id 加载，每 3s 轮询）
 - **API Keys**：增/删 API Key
 - **Providers**：增/改/删 Provider 偏好（含 baseUrl / api / 自定义 model 列表）
 - **Model Prefs**：增/改/删 Model 偏好（id → provider + modelId + thinkingLevel）
@@ -215,4 +216,4 @@ bun test --watch
 
 ## 教程
 
-21 课时循序渐进的搭建指南在 [`docs/lessons/`](./docs/lessons/README.md)（文档已全部写完，代码当前实现到第 13 课 Challenge 控制平面 + 第 21 课 CLI 模块化）。
+21 课时循序渐进的搭建指南在 [`docs/lessons/`](./docs/lessons/README.md)（文档已全部写完，代码已实现到第 21 课：Challenge 控制平面 → Planner 调度循环 → SSE → 策略板 → Observer 工具/循环 → Ralph Loop → 协作广播 + Attack Timeline → CLI 模块化）。

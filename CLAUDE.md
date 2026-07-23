@@ -51,12 +51,14 @@ packages/core/src/
       index.ts                      challengeObserverExtension 统一入口（打包 observer + ralph factory）+ systemPrompt 契约 + 再导出 isChallengeMode
   challenge/
     env.ts                          challenge 模式注入容器的环境变量名常量
-    host-bridge-*.ts                Solver ↔ Host bridge（client / handler / types / challenge-handler）
+    host-bridge-*.ts                Solver ↔ Host bridge（client / handler / types / challenge-handler：hint/flag-correct 触发协作广播）
+    attack-timeline.ts              attack timeline 纯聚合（attempts/submissions/memory/ideas → 升序事件流）
+    attack-timeline.test.ts         bun:test 单元测试
     store.ts                        Challenge 数据存储层（元数据 + attempts/submissions 日志，原子写 + mkdir 文件锁）
     store.test.ts                   bun:test 单元测试
     api-client.ts                   平台 REST 客户端（信封 / Agent-Token / 3 RPS 限流 / 2.5s 超时 / mock 模式）
     api-client.test.ts              bun:test 单元测试
-    manager.ts                      ChallengeManager 控制平面（API + store + 业务逻辑 + mock 平台行为）
+    manager.ts                      ChallengeManager 控制平面（API + store + 业务逻辑 + mock 平台行为 + buildAttackTimeline）
     manager.test.ts                 bun:test 单元测试
   runtime/runtime.ts                RuntimeManager（Docker 镜像 + 容器生命周期，收 host bridge handler 链）
 packages/ui-web/src/

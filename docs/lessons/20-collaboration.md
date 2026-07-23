@@ -67,86 +67,38 @@ hint / flag-correct 用 `steer`（让 solver 立刻注意到）。
 
 ---
 
-## 第一步：在 host-bridge-handler 加广播逻辑
+## 第一步：在 challenge host-bridge handler 加广播逻辑
 
-### 1.1 修改 packages/core/src/challenge/host-bridge-handler.ts
+> 设计要点：广播是 challenge 专属行为（要按 challengeId 过滤同题 solver），所以
+> 广播逻辑加在**已有的** `createChallengeHostBridgeHandler`（host-bridge-challenge-handler.ts）
+> 里，而不是塞进通用的 `createBuiltinHostBridgeHandler`（后者只管 ping/get_env/get_api_key）。
+> 该 handler 已经在处理 `challenge_get_hint` / `challenge_submit_flag`，只需在拿到 hint、
+> 判定 correct 之后顺手广播即可。
+
+### 1.1 给 createChallengeHostBridgeHandler 加 runtimeGetter
+
+`host-bridge-challenge-handler.ts` 顶部新增广播辅助函数（`formatFlagSolvedBroadcastMessage`
+与 `broadcastToChallengeSolvers` 导出，便于单测）：
 
 ```typescript
-// 顶部加 imports
 import type { RuntimeManager } from "../runtime/runtime"
-import type { ChallengeManager } from "./manager"
 
-/** 广播选项 */
-interface BroadcastOptions {
-    /** 排除某个 solver（通常是事件发起者） */
-    excludeSolverId?: string
-    /** 投递级别：steer（高优先级）或 follow_up（普通） */
-    delivery?: "steer" | "follow_up"
-}
+/** 投递级别：steer（高优先级，立即影响下一轮）/ follow_up（普通追加）。 */
+export type BroadcastDelivery = "steer" | "follow_up"
 
-/**
- * 把 hint 包装成 steer 消息发给 solver。
- */
-function sendHintToSolver(
-    runtime: RuntimeManager,
-    solverId: string,
-    hintContent: string,
-): void {
-    const message = hintContent.trim()
-    if (!message) return
-    runtime.sendCommand(solverId, {
-        type: "steer",
-        message: `系统同步：赛题 hint 已更新。\n- 立即吸收 hint，刷新 memory/idea。\n- hint:\n${message}`,
-    })
-}
-
-/**
- * 广播给同题目的所有活跃 solver。
- */
-function broadcastToChallengeSolvers(
-    runtime: RuntimeManager,
-    challengeId: string,
-    message: string,
-    options: BroadcastOptions = {},
-): void {
-    const text = message.trim()
-    if (!text) return
-
-    for (const solver of runtime.list()) {
-        if (solver.challengeId !== challengeId) continue
-        if (solver.status !== "running") continue
-        if (options.excludeSolverId && solver.id === options.excludeSolverId) continue
-
-        try {
-            if (options.delivery === "steer") {
-                runtime.sendCommand(solverId, { type: "steer", message: text })
-            } else {
-                runtime.sendCommand(solverId, { type: "follow_up", message: text })
-            }
-        } catch (error) {
-            console.error(`[broadcast] failed for ${solver.id}:`, error)
-        }
-    }
-}
-
-/**
- * 构造"flag 已拿到"的广播消息。
- */
-function formatFlagSolvedBroadcastMessage(input: {
+/** 构造"flag 已拿到"的协作广播消息（导出便于单测）。 */
+export function formatFlagSolvedBroadcastMessage(input: {
     flag: string
     gotCount?: number
     flagCount?: number
     isCompleted: boolean
 }): string {
-    const progress =
+    const hasProgress =
         typeof input.gotCount === "number" && typeof input.flagCount === "number"
-            ? `${input.gotCount}/${input.flagCount}`
-            : "-"
-    const remaining =
-        typeof input.gotCount === "number" && typeof input.flagCount === "number"
-            ? Math.max(input.flagCount - input.gotCount, 0)
-            : undefined
-
+    const progress = hasProgress ? `${input.gotCount}/${input.flagCount}` : "-"
+    const remaining = hasProgress
+        ? Math.max((input.flagCount as number) - (input.gotCount as number), 0)
+        : undefined
     const lines: string[] = [
         "协作同步：同题已有 solver 提交正确 flag。",
         `- flag: ${input.flag}`,
@@ -160,152 +112,118 @@ function formatFlagSolvedBroadcastMessage(input: {
     )
     return lines.join("\n")
 }
+
+/** 把消息广播给同题目、running、非发起者的所有 solver（导出便于单测）。 */
+export function broadcastToChallengeSolvers(
+    runtime: RuntimeManager | undefined,
+    challengeId: string,
+    excludeSolverId: string,
+    message: string,
+    delivery: BroadcastDelivery = "steer",
+): void {
+    if (!runtime) return
+    const text = message.trim()
+    if (!text) return
+    for (const solver of runtime.list()) {
+        if (solver.challengeId !== challengeId) continue
+        if (solver.status !== "running") continue
+        if (solver.id === excludeSolverId) continue
+        try {
+            runtime.sendCommand(solver.id, { type: delivery, message: text })
+        } catch (error) {
+            console.error(`[broadcast] failed for ${solver.id}:`, error)
+        }
+    }
+}
 ```
 
-### 1.2 扩展 createBuiltinHostBridgeHandler
-
-修改原有的内置 handler，让它接收 `runtime` 和 `challengeManager`：
+然后给 `createChallengeHostBridgeHandler` 加一个**可选的延迟取值参数** `runtimeGetter`，
+并在两个 case 里触发广播：
 
 ```typescript
-export function createBuiltinHostBridgeHandler(
-    options: {
-        getSolverEnvValue?: (solverId: string, key: string) => string | undefined
-        hasApiKey?: (provider: string) => boolean
-        // 新增：
-        runtime?: RuntimeManager
-        challengeManager?: ChallengeManager
-    } = {},
+export function createChallengeHostBridgeHandler(
+    challengeManager: ChallengeManager,
+    runtimeGetter?: () => RuntimeManager | undefined,
 ): HostBridgeHandler {
     return {
         async handle(ctx: HostBridgeHandleContext): Promise<HostBridgeHandleResult> {
-            // 已有的 ping / get_env / get_api_key ...
+            const challengeId = ctx.getSolverEnvValue?.(CHALLENGE_ENV_CHALLENGE_ID)
+            if (!challengeId) return { handled: false }
 
-            // challenge 相关 action 转给 challengeManager
-            if (ctx.action.startsWith("challenge_") && options.challengeManager) {
-                return handleChallengeAction(options.challengeManager, options.runtime, ctx)
+            switch (ctx.action) {
+                // ... challenge_get_state / challenge_is_completed 不变 ...
+
+                case "challenge_get_hint": {
+                    const result = await challengeManager.getHint(challengeId)
+                    // hint 非空 → 广播给同题其他 solver（steer，让它们立刻吸收）
+                    broadcastHint(runtimeGetter?.(), challengeId, ctx.solverId, result.remote.hint_content)
+                    return { handled: true, data: result.remote }
+                }
+
+                case "challenge_submit_flag": {
+                    const params = (ctx.params ?? {}) as { flag: string; writeup?: string }
+                    if (!params.flag) return { handled: true, data: { error: "flag is required" } }
+                    const result = await challengeManager.submitFlag(challengeId, params.flag, {
+                        solverId: ctx.solverId,
+                        writeup: params.writeup,
+                    })
+                    // correct → 广播转剩余 flag（steer）
+                    if (result.remote.correct) {
+                        broadcastToChallengeSolvers(
+                            runtimeGetter?.(),
+                            challengeId,
+                            ctx.solverId,
+                            formatFlagSolvedBroadcastMessage({
+                                flag: params.flag,
+                                gotCount: result.remote.flag_got_count,
+                                flagCount: result.remote.flag_count,
+                                isCompleted: result.is_completed,
+                            }),
+                            "steer",
+                        )
+                    }
+                    return { handled: true, data: { /* correct / flag_got_count / flag_count / is_completed */ } }
+                }
+
+                default:
+                    return { handled: false }
             }
-
-            // ... 默认分支 ...
         },
     }
 }
-
-/**
- * 处理 challenge 相关的 host bridge 请求（含协作广播）。
- */
-async function handleChallengeAction(
-    challengeManager: ChallengeManager,
-    runtime: RuntimeManager | undefined,
-    ctx: HostBridgeHandleContext,
-): Promise<HostBridgeHandleResult> {
-    const challengeId = ctx.getSolverEnvValue?.("TCH_CHALLENGE_ID")
-    if (!challengeId) return { handled: false }
-
-    switch (ctx.action) {
-        case "challenge_get_hint": {
-            const result = await challengeManager.getHint(challengeId)
-            // 广播 hint 给同题目其他 solver
-            if (runtime && result.remote.hint_content) {
-                for (const solver of runtime.list()) {
-                    if (solver.challengeId !== challengeId) continue
-                    if (solver.status !== "running") continue
-                    if (solver.id === ctx.solverId) continue  // 排除发起者
-                    sendHintToSolver(runtime, solver.id, result.remote.hint_content)
-                }
-            }
-            return { handled: true, data: result.remote }
-        }
-
-        case "challenge_submit_flag": {
-            const params = (ctx.params ?? {}) as { flag: string; writeup?: string }
-            if (!params.flag) return { handled: true, data: { error: "flag required" } }
-
-            const result = await challengeManager.submitFlag(challengeId, params.flag, {
-                solverId: ctx.solverId,
-                writeup: params.writeup,
-            })
-
-            // correct → 广播给其他 solver
-            if (result.remote.correct && runtime) {
-                const message = formatFlagSolvedBroadcastMessage({
-                    flag: params.flag,
-                    gotCount: result.remote.flag_got_count,
-                    flagCount: result.remote.flag_count,
-                    isCompleted: result.is_completed,
-                })
-                broadcastToChallengeSolvers(runtime, challengeId, message, {
-                    excludeSolverId: ctx.solverId,
-                    delivery: "steer",
-                })
-            }
-
-            return {
-                handled: true,
-                data: {
-                    correct: result.remote.correct,
-                    flag_got_count: result.remote.flag_got_count,
-                    flag_count: result.remote.flag_count,
-                    is_completed: result.is_completed,
-                },
-            }
-        }
-
-        // challenge_get_state / challenge_is_completed 已在课时 13 实现
-    }
-
-    return { handled: false }
-}
 ```
 
-### 1.3 在 DaemonManager 注入新参数
+### 1.2 在 DaemonManager 用闭包延迟绑定 runtime
+
+`runtime` 构造期需要 handler，而 handler 广播又需要 runtime —— 鸡生蛋。用**闭包 getter**
+规避：handler 只在 host bridge 请求到达时调 `runtimeGetter()`（那时 runtime 早已就绪）。
 
 修改 `packages/core/src/index.ts`：
 
 ```typescript
 static async getInstance(): Promise<DaemonManager> {
-    // ...
+    if (this.instance) return this.instance
     const created = (async () => {
         const config = await ConfigManager.getInstance()
         const challenge = new ChallengeManager(config)
+        // 延迟绑定 runtime：getter 只在请求到达时调用，runtime 早已赋值。
+        let runtimeRef: RuntimeManager | undefined
         const runtime = new RuntimeManager(config, [
-            // 先创建内置 handler，但 runtime 还没建好，怎么办？
-            // 解法：用闭包延迟绑定
-            createDeferredChallengeHandler(() => runtime, challenge),
+            createChallengeHostBridgeHandler(challenge, () => runtimeRef),
         ])
+        runtimeRef = runtime
         challenge.attachRuntime(runtime)
         await runtime.init()
         return new DaemonManager(config, challenge, runtime)
     })()
-    // ...
-}
-
-/**
- * 延迟绑定 runtime 的 handler 工厂。
- * 解决循环依赖：runtime 构造时需要 handler，但 handler 需要 runtime。
- */
-function createDeferredChallengeHandler(
-    getRuntime: () => RuntimeManager,
-    challengeManager: ChallengeManager,
-): HostBridgeHandler {
-    return {
-        async handle(ctx) {
-            const runtime = getRuntime()
-            const builtin = createBuiltinHostBridgeHandler({
-                runtime,
-                challengeManager,
-                getSolverEnvValue: (solverId, key) => {
-                    // 通过 runtime 内部 map 查（需要 runtime 暴露这个能力）
-                    return undefined
-                },
-                hasApiKey: (provider) => false,
-            })
-            return builtin.handle(ctx)
-        },
-    }
+    // ...（原有 catch 逻辑不变）...
 }
 ```
 
-> 💡 **简化设计**：实际上 RuntimeManager 内部应该让 handler 能访问 solverEnvs。可以在 readStream 处理 host_bridge_request 时把 solverEnvs 注入 ctx。这部分留给读者完善。
+> 💡 不需要额外的 `createDeferredChallengeHandler` 包装，也不必让 `createBuiltinHostBridgeHandler`
+> 知道 runtime —— `solverEnvs` 已经由 RuntimeManager 在构造 builtin handler 时通过
+> `getSolverEnvValue` 闭包注入（见 runtime.ts 构造函数），challengeId 解析照常走
+> `ctx.getSolverEnvValue(CHALLENGE_ENV_CHALLENGE_ID)`。
 
 ---
 
@@ -314,27 +232,25 @@ function createDeferredChallengeHandler(
 ### 2.1 创建 packages/core/src/challenge/attack-timeline.ts
 
 ```typescript
-import { readdir, stat } from "node:fs/promises"
-import { join, resolve } from "node:path"
-import { SOLVERS_DIR, ARCHIVE_SOLVERS_DIR } from "../runtime/types"
 import type { ChallengeAttemptLogRecord, ChallengeSubmissionLogRecord } from "./store"
 import type { IdeaRecord, MemoryEntry } from "./memory"
 
-/** 时间线事件类型 */
+/**
+ * 时间线事件类型。
+ *
+ * 当前只产出这六种（来源：attempts / submissions / memory / ideas 的 added+updated）。
+ * solver session 内部的 message / tool_call 等暂未纳入（需额外读 session 目录）。
+ */
 export type AttackTimelineEventKind =
     | "solver_started"
-    | "solver_ended"
-    | "message"
-    | "tool_call"
-    | "tool_result"
+    | "flag_submitted"
     | "memory_added"
     | "memory_updated"
     | "idea_added"
     | "idea_updated"
-    | "flag_submitted"
 
-/** 泳道分类 */
-export type AttackTimelineLane = "challenge" | "solver" | "observer" | "board" | "submission"
+/** 泳道分类（前端按泳道着色）。 */
+export type AttackTimelineLane = "challenge" | "submission" | "board"
 
 /** 一条时间线事件 */
 export interface AttackTimelineEvent {
@@ -365,29 +281,17 @@ export interface BuildAttackTimelineInput {
     ideas: IdeaRecord[]
 }
 
-/** ISO → 时间戳 */
+/** ISO 字符串 → 毫秒时间戳；非法 / 缺失返回 undefined。 */
 function parseTimestamp(value?: string): number | undefined {
     if (!value) return undefined
     const ts = Date.parse(value)
     return Number.isFinite(ts) ? ts : undefined
 }
 
-/** 路径是否存在 */
-async function isDirectory(path: string): Promise<boolean> {
-    try {
-        return (await stat(path)).isDirectory()
-    } catch {
-        return false
-    }
-}
-
-/** 找 solver session 目录（活跃 + 归档） */
-async function resolveSolverSessionDir(solverId: string): Promise<string | undefined> {
-    const active = join(SOLVERS_DIR, solverId, "session")
-    if (await isDirectory(active)) return active
-    const archived = join(ARCHIVE_SOLVERS_DIR, solverId, "session")
-    if (await isDirectory(archived)) return archived
-    return undefined
+/** 截断文本用于 summary（避免超长 board 内容撑爆时间线）。 */
+function clip(text: string, max: number): string {
+    const flat = text.replace(/\s+/g, " ").trim()
+    return flat.length > max ? `${flat.slice(0, max)}…` : flat
 }
 
 /**
@@ -396,12 +300,14 @@ async function resolveSolverSessionDir(solverId: string): Promise<string | undef
  * 数据来源：
  *   - attempts（启动事件）
  *   - submissions（flag 提交事件）
- *   - memory（板变更事件）
- *   - ideas（板变更事件）
+ *   - memory（板变更事件：added + 可选 updated）
+ *   - ideas（板变更事件：added + 可选 updated）
+ *
+ * 纯函数（不读文件系统）：数据由 ChallengeManager 并行拉取后注入。
  */
-export async function buildChallengeAttackTimeline(
+export function buildChallengeAttackTimeline(
     input: BuildAttackTimelineInput,
-): Promise<AttackTimelineSnapshot> {
+): AttackTimelineSnapshot {
     const events: AttackTimelineEvent[] = []
 
     // 1. solver 启动事件
@@ -450,7 +356,7 @@ export async function buildChallengeAttackTimeline(
                 lane: "board",
                 kind: "memory_added",
                 title: `[${m.kind}] memory added`,
-                summary: m.content.slice(0, 100),
+                summary: clip(m.content, 100),
                 payload: m,
             })
         }
@@ -462,7 +368,7 @@ export async function buildChallengeAttackTimeline(
                 lane: "board",
                 kind: "memory_updated",
                 title: `[${m.kind}] memory updated`,
-                summary: m.content.slice(0, 100),
+                summary: clip(m.content, 100),
                 payload: m,
             })
         }
@@ -480,7 +386,7 @@ export async function buildChallengeAttackTimeline(
                 lane: "board",
                 kind: "idea_added",
                 title: `[${idea.status}] idea added`,
-                summary: idea.content.slice(0, 100),
+                summary: clip(idea.content, 100),
                 payload: idea,
             })
         }
@@ -492,7 +398,7 @@ export async function buildChallengeAttackTimeline(
                 lane: "board",
                 kind: "idea_updated",
                 title: `[${idea.status}] idea updated`,
-                summary: `${idea.content.slice(0, 60)} -> ${idea.result.slice(0, 60)}`,
+                summary: `${clip(idea.content, 60)} -> ${clip(idea.result, 60)}`,
                 payload: idea,
             })
         }
@@ -513,14 +419,25 @@ export async function buildChallengeAttackTimeline(
 
 ## 第三步：在 ChallengeManager 加 timeline 方法
 
+先补一个缺失的 wrapper —— `listSubmissionLogs`（store 早有 `listChallengeSubmissionLogs`，
+但 ChallengeManager 没包一层，照 `listAttemptLogs` 的样子加）：
+
+```typescript
+// store 的 import 加上 listChallengeSubmissionLogs；type import 加 ChallengeSubmissionLogRecord
+async listSubmissionLogs(challengeId: string): Promise<ChallengeSubmissionLogRecord[]> {
+    const rootDir = await this.getRootDir()
+    return listChallengeSubmissionLogs(rootDir, challengeId)
+}
+```
+
+再加 `buildAttackTimeline`（并行拉四源 → 聚合；无需手动取 rootDir，list 方法内部自取）：
+
 ```typescript
 // 在 ChallengeManager 类里加：
 
 async buildAttackTimeline(challengeId: string): Promise<AttackTimelineSnapshot> {
-    const rootDir = await this.getRootDir()
-
-    // 并行拉取所有数据
-    const [memory, ideas, attempts, submissions] = await Promise.all([
+    // 并行拉取所有数据（注意：局部变量用 memoryEntries，避免遮蔽 import * as memory 模块）
+    const [memoryEntries, ideas, attempts, submissions] = await Promise.all([
         this.listMemory(challengeId),
         this.listIdeas(challengeId),
         this.listAttemptLogs(challengeId),
@@ -529,10 +446,10 @@ async buildAttackTimeline(challengeId: string): Promise<AttackTimelineSnapshot> 
 
     return buildChallengeAttackTimeline({
         challengeId,
-        memory,
-        ideas,
         attempts,
         submissions,
+        memory: memoryEntries,
+        ideas,
     })
 }
 ```
@@ -540,86 +457,69 @@ async buildAttackTimeline(challengeId: string): Promise<AttackTimelineSnapshot> 
 ### 3.1 加 import
 
 ```typescript
-import { buildChallengeAttackTimeline, type AttackTimelineSnapshot } from "./attack-timeline"
+import { buildChallengeAttackTimeline } from "./attack-timeline"
+import type { AttackTimelineSnapshot } from "./attack-timeline"
 ```
 
 ---
 
 ## 第四步：Web API 暴露 timeline
 
-修改 `packages/ui-web/src/server.ts`，加路由：
+修改 `packages/ui-web/src/server.ts`。先把 daemon 解构里加上 `challenge`（原来只解了
+`config` / `runtime`），再加路由：
 
 ```typescript
+const { config, runtime, challenge } = daemon
+// ...
 "/api/runtime/challenges/:id/timeline": {
-    GET: async (_req, params) => {
-        const timeline = await daemon.challenge.buildAttackTimeline(params.id)
-        return Response.json(timeline)
-    },
+    GET: async (_req, params) =>
+        Response.json(await challenge.buildAttackTimeline(params.id)),
 },
 ```
 
-### 4.1 前端时间线组件
+### 4.1 前端时间线页
 
-在 `packages/ui-web/src/app.tsx` 加 TimelinePage：
+新建 `packages/ui-web/src/pages/timeline.tsx`：一个侧栏导航页（`Timeline`），顶部输入
+challenge id，回车 / Load 后每 3s 轮询 timeline 接口，事件按时间戳列出、按 lane（challenge /
+submission / board）着色，空态用共享 `EmptyState`。
 
 ```typescript
-function ChallengeTimelinePage({ challengeId }: { challengeId: string }) {
-    const [timeline, setTimeline] = useState<{ events: AttackTimelineEvent[] } | null>(null)
+// pages/timeline.tsx（要点）
+interface AttackTimelineEvent {
+    id: string
+    timestamp: number
+    lane: "challenge" | "submission" | "board"
+    kind: string
+    title: string
+    summary: string
+}
 
+const LANE_STYLE: Record<AttackTimelineEvent["lane"], string> = {
+    challenge: "bg-blue-100 text-blue-800",
+    submission: "bg-red-100 text-red-800",
+    board: "bg-orange-100 text-orange-800",
+}
+
+export function TimelinePage() {
+    const [loadedId, setLoadedId] = useState<string | null>(null)
+    const [timeline, setTimeline] = useState<AttackTimelineSnapshot | null>(null)
     useEffect(() => {
+        if (!loadedId) return
+        let cancelled = false
         async function load() {
-            const res = await fetch(`/api/runtime/challenges/${challengeId}/timeline`)
-            setTimeline(await res.json())
+            const res = await fetch(`/api/runtime/challenges/${loadedId}/timeline`)
+            if (!cancelled) setTimeline(await res.json())
         }
         void load()
         const timer = setInterval(load, 3000)
-        return () => clearInterval(timer)
-    }, [challengeId])
-
-    if (!timeline) return <div>Loading...</div>
-
-    return (
-        <div>
-            <h2 className="text-2xl font-bold mb-4">Timeline: {challengeId}</h2>
-            <div className="bg-white rounded shadow p-4">
-                {timeline.events.length === 0 ? (
-                    <div className="text-slate-500">No events yet</div>
-                ) : (
-                    timeline.events.map((e) => (
-                        <div key={e.id} className="border-b py-2 flex gap-3">
-                            <div className="text-slate-500 text-sm w-32">
-                                {new Date(e.timestamp).toLocaleString()}
-                            </div>
-                            <div className="w-24">
-                                <LaneBadge lane={e.lane} />
-                            </div>
-                            <div className="flex-1">
-                                <div className="font-semibold">{e.title}</div>
-                                <div className="text-sm text-slate-600">{e.summary}</div>
-                            </div>
-                        </div>
-                    ))
-                )}
-            </div>
-        </div>
-    )
-}
-
-function LaneBadge({ lane }: { lane: string }) {
-    const colors: Record<string, string> = {
-        challenge: "bg-blue-100 text-blue-800",
-        solver: "bg-green-100 text-green-800",
-        observer: "bg-purple-100 text-purple-800",
-        board: "bg-orange-100 text-orange-800",
-        submission: "bg-red-100 text-red-800",
-    }
-    return (
-        <span className={`px-2 py-1 rounded text-xs ${colors[lane] ?? "bg-slate-100"}`}>
-            {lane}
-        </span>
-    )
+        return () => { cancelled = true; clearInterval(timer) }
+    }, [loadedId])
+    // ... 输入框 + events.map 渲染（时间 / LaneBadge / title / summary）
 }
 ```
+
+在 `app.tsx` 里把它接进导航（`NavPage` 加 `"timeline"`，NAV 加一项，渲染分支加
+`{page === "timeline" && <TimelinePage />}`）。
 
 ---
 
@@ -714,10 +614,19 @@ console.log('subscribers:', runtime.list().filter(s => s.challengeId === challen
 - 实现 attack timeline 数据聚合
 - 加 timeline Web API + 前端组件
 
-📦 **新增文件**：
+📦 **新增 / 修改文件**：
 
 ```
-packages/core/src/challenge/attack-timeline.ts
+packages/core/src/challenge/
+├── attack-timeline.ts                    ← 新增：纯聚合函数 + 类型
+├── attack-timeline.test.ts               ← 新增：8 个单测
+├── host-bridge-challenge-handler.ts      ← 改：加 runtimeGetter + 广播辅助函数
+├── host-bridge-challenge-handler.test.ts ← 新增：9 个单测（纯函数 + fake runtime）
+└── manager.ts                            ← 改：listSubmissionLogs + buildAttackTimeline
+packages/core/src/index.ts                ← 改：闭包延迟绑定 runtime 给 challenge handler
+packages/ui-web/src/server.ts             ← 改：daemon 解构 +challenge，加 timeline 路由
+packages/ui-web/src/pages/timeline.tsx    ← 新增：Timeline 导航页
+packages/ui-web/src/app.tsx               ← 改：NAV 加 timeline
 ```
 
 🔑 **关键概念**：
