@@ -51,7 +51,14 @@ export class DaemonManager {
         const created = (async () => {
             const config = await ConfigManager.getInstance()
             const challenge = new ChallengeManager(config)
-            const runtime = new RuntimeManager(config, [createChallengeHostBridgeHandler(challenge)])
+            // 延迟绑定 runtime：handler 需要 runtime 做协作广播（lesson 20），
+            // 而 runtime 构造期又需要 handler。用闭包 getter 规避循环依赖——
+            // getter 只在 host bridge 请求到达时调用（runtime 早已就绪）。
+            let runtimeRef: RuntimeManager | undefined
+            const runtime = new RuntimeManager(config, [
+                createChallengeHostBridgeHandler(challenge, () => runtimeRef),
+            ])
+            runtimeRef = runtime
             challenge.attachRuntime(runtime)
             await runtime.init()
             return new DaemonManager(config, challenge, runtime)

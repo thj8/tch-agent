@@ -55,7 +55,7 @@ async function startTailwindWatcher(): Promise<void> {
 export async function startWeb(options: WebServerOptions = {}): Promise<void> {
     const { hostname = "127.0.0.1", port = 3000 } = options
     const daemon = await DaemonManager.getInstance()
-    const { config, runtime } = daemon
+    const { config, runtime, challenge } = daemon
 
     await runtime.init((msg: string) => console.log(`[runtime] ${msg}`))
     await startTailwindWatcher()
@@ -245,6 +245,13 @@ export async function startWeb(options: WebServerOptions = {}): Promise<void> {
 
             "/api/runtime/ping": {
                 GET: async () => Response.json({ ok: await runtime.ping() }),
+            },
+
+            // ── Attack Timeline（课时 20）：聚合 attempts/submissions/memory/ideas ──
+
+            "/api/runtime/challenges/:id/timeline": {
+                GET: async (_req, params) =>
+                    Response.json(await challenge.buildAttackTimeline(params.id)),
             },
 
             // ── SSE 路由（课时 15）──

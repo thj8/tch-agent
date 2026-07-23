@@ -14,6 +14,7 @@ import {
     ensureChallengeStoreBaseDir,
     listChallengeAttemptLogs,
     listChallengeRecords,
+    listChallengeSubmissionLogs,
     readChallengeRecord,
     saveChallengeRecord,
 } from "./store"
@@ -21,7 +22,10 @@ import type {
     ChallengeAttemptLogRecord,
     ChallengeInfoRecord,
     ChallengeRecord,
+    ChallengeSubmissionLogRecord,
 } from "./store"
+import { buildChallengeAttackTimeline } from "./attack-timeline"
+import type { AttackTimelineSnapshot } from "./attack-timeline"
 import type { ConfigManager } from "../config/index"
 import type { RuntimeManager } from "../runtime/runtime"
 import { createAgentSession, defineTool, SessionManager } from "@mariozechner/pi-coding-agent"
@@ -753,6 +757,34 @@ export class ChallengeManager {
     async listAttemptLogs(challengeId: string): Promise<ChallengeAttemptLogRecord[]> {
         const rootDir = await this.getRootDir()
         return listChallengeAttemptLogs(rootDir, challengeId)
+    }
+
+    /** 列出 flag 提交日志 */
+    async listSubmissionLogs(challengeId: string): Promise<ChallengeSubmissionLogRecord[]> {
+        const rootDir = await this.getRootDir()
+        return listChallengeSubmissionLogs(rootDir, challengeId)
+    }
+
+    /**
+     * 构造 challenge 的 attack timeline（lesson 20）。
+     *
+     * 并行拉取 attempts / submissions / memory / ideas 四个数据源，
+     * 交给 buildChallengeAttackTimeline 聚合成按时间戳升序的事件流。
+     */
+    async buildAttackTimeline(challengeId: string): Promise<AttackTimelineSnapshot> {
+        const [memoryEntries, ideas, attempts, submissions] = await Promise.all([
+            this.listMemory(challengeId),
+            this.listIdeas(challengeId),
+            this.listAttemptLogs(challengeId),
+            this.listSubmissionLogs(challengeId),
+        ])
+        return buildChallengeAttackTimeline({
+            challengeId,
+            attempts,
+            submissions,
+            memory: memoryEntries,
+            ideas,
+        })
     }
 
     // ── ideas + memory（lesson 16：策略板）──────────────────

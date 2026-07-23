@@ -1,17 +1,19 @@
 import { useState } from "react"
-import { Boxes, Brain, KeyRound, Server } from "lucide-react"
+import { Boxes, Brain, KeyRound, Server, Timeline } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { ApiKeysPage } from "./pages/api-keys"
 import { ModelPrefsPage } from "./pages/model-prefs"
 import { ProvidersPage } from "./pages/providers"
 import { SolverDetailPage } from "./pages/solver-detail"
 import { SolversPage } from "./pages/solvers"
+import { TimelinePage } from "./pages/timeline"
 
-type NavPage = "solvers" | "api-keys" | "providers" | "model-prefs"
+type NavPage = "solvers" | "api-keys" | "providers" | "model-prefs" | "timeline"
 type Page = NavPage | { type: "solver-detail"; id: string }
 
 const NAV: { id: NavPage; label: string; icon: LucideIcon }[] = [
     { id: "solvers", label: "Solvers", icon: Server },
+    { id: "timeline", label: "Timeline", icon: Timeline },
     { id: "api-keys", label: "API Keys", icon: KeyRound },
     { id: "providers", label: "Providers", icon: Boxes },
     { id: "model-prefs", label: "Model Prefs", icon: Brain },
@@ -45,6 +47,7 @@ export function App() {
                         onSelectSolver={(id) => navigate({ type: "solver-detail", id })}
                     />
                 )}
+                {page === "timeline" && <TimelinePage />}
                 {page === "api-keys" && <ApiKeysPage />}
                 {page === "providers" && <ProvidersPage />}
                 {page === "model-prefs" && <ModelPrefsPage />}
